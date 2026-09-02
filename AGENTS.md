@@ -24,7 +24,7 @@ is a plain Python virtualenv (no Conda).
 | `web_demo/hf_convfill/` | The active adapter: `server.py` (entry point), `backend.py` (registry), `handler.py` (the LLM-stage handler), `test_handler.py`. |
 | `web_demo/hf_interface/` | Vendored Hugging Face browser UI plus a local FastAPI static host (`server.py`, `test_server.py`). See `UPSTREAM.md`. |
 | `configs/` | Demo configs, Talker configs, Reasoner model names, Reasoner prompt templates. |
-| `scripts/` | `setup_demo.sh`, `run_web_demo.sh`. |
+| `scripts/` | `setup_demo.sh`, `run_web_demo.sh`, `quantize_gguf.sh` (offline model packaging; not used by the demo). |
 | `web_demo/backend/`, `web_demo/frontend/` | **Legacy.** The previous FastAPI + React/Vite demo, kept for reference only. Not installable from the current dependencies, not tested, not run. |
 | `src/tts/` | **Legacy.** Only serves the old demo (`piper_tts.py`, `avspeech_tts`). |
 
