@@ -173,6 +173,17 @@ class ConvFillFrontend:
     def reset_turn_state(self):
         self.turn_state_manager.reset()
 
+    def get_thoughts_and_reset_turn_state(self):
+        """Return this turn's consumed thoughts and drop the partial turn.
+
+        Used when a turn is interrupted: the response the user heard is decided
+        by the transport, but the Reasoner knowledge that produced it is only
+        known here.
+        """
+        thoughts = list(self.turn_state_manager.thoughts)
+        self.reset_turn_state()
+        return thoughts
+
     def _iter_hf_chunks(self, prompt):
         encoded = self.tokenizer(
             prompt, return_tensors="pt", padding=False, truncation=False

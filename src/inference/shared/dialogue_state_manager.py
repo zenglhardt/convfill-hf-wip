@@ -33,6 +33,17 @@ class DialogueStateManager:
             self.thoughts.append(non_sil_thoughts)
             assert(len(self.thoughts) == len(self.user_turns))
 
+    # Attaches a response to the pending user turn in one step, so an
+    # interrupted turn lands with the same list invariants as a completed one.
+    def commit_turn(self, user_turn, response, thoughts=None):
+        with self.lock:
+            assert self.user_turns, "commit_turn called with no pending user turn"
+            assert self.user_turns[-1] == user_turn, "commit_turn user turn does not match the pending turn"
+            assert len(self.responses) == len(self.user_turns) - 1, "commit_turn called on an already answered turn"
+            self.update_response_state(response)
+            self.update_thoughts_state(list(thoughts or []))
+            return True
+
     def get_transcript(self) -> str:
             """Return the conversation the Reasoner should continue.
 

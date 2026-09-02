@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from queue import Empty
 from typing import Any
 
 import nltk
@@ -26,6 +27,7 @@ finally:
     nltk.data.find = _nltk_find
 
 from .backend import register_convfill_backend
+from .delivery import DeliveryLedgerQueue
 from .handler import ConvFillRealtimeHandler
 
 # HF builds its argument dataclasses from the registry while importing the
@@ -40,7 +42,14 @@ finally:
 
 
 def _attach_audio_state(manager: Any) -> Any:
-    """Wire each adapter to the response-playing event in its pipeline unit."""
+    """Swap each unit's audio output queue for a ConvFill delivery ledger.
+
+    Every assistant text event and audio chunk the realtime send loop dispatches
+    is dequeued from this queue, so subclassing it is the only place ConvFill can
+    observe what the browser was actually sent. ``build_pipeline`` returns before
+    ``ThreadManager.start`` launches any handler thread, so the swap happens while
+    the queue is quiescent.
+    """
     realtime_server = next((handler for handler in manager.handlers if hasattr(handler, "pool")), None)
     if realtime_server is None:
         raise RuntimeError("Could not locate Hugging Face RealtimeServer in the pipeline manager.")
@@ -51,7 +60,27 @@ def _attach_audio_state(manager: Any) -> Any:
         )
         if adapter is None:
             raise RuntimeError(f"Pipeline {unit.index} has no ConvFillRealtimeHandler.")
-        adapter.set_response_playing_event(unit.response_playing)
+
+        previous_queue = unit.output_queue
+        # The TTS handler also writes to its own ``queue_out`` reference
+        # directly, so both bindings have to move together.
+        producers = [
+            handler for handler in unit.handlers if getattr(handler, "queue_out", None) is previous_queue
+        ]
+        if not producers:
+            raise RuntimeError(f"Pipeline {unit.index} has no handler writing to the audio output queue.")
+
+        ledger = DeliveryLedgerQueue()
+        while True:
+            try:
+                ledger.put_nowait(previous_queue.get_nowait())
+            except Empty:
+                break
+
+        unit.output_queue = ledger
+        for handler in producers:
+            handler.queue_out = ledger
+        adapter.set_delivery_ledger(ledger)
     return manager
 
 
@@ -62,8 +91,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         return
 
     # The pinned upstream builder owns the full VAD/STT/TTS/realtime stack. A
-    # narrow wrapper adds the one transport signal ConvFill needs to schedule
-    # <sil> fillers only while the listener would otherwise hear silence.
+    # narrow wrapper swaps in the delivery ledger ConvFill needs to schedule
+    # <sil> fillers and to keep an interrupted turn in history.
     original_build_pipeline = s2s_pipeline.build_pipeline
 
     def build_pipeline_with_convfill(*args: Any, **kwargs: Any) -> Any:

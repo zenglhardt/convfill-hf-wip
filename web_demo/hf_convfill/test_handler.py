@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+import queue
 import threading
 from queue import Queue
 from types import SimpleNamespace
 
 from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
 from speech_to_speech.pipeline.cancel_scope import CancelScope
-from speech_to_speech.pipeline.messages import EndOfResponse, LLMResponseChunk
+from speech_to_speech.pipeline.events import AssistantOutputEvent
+from speech_to_speech.pipeline.messages import (
+    AssistantTextPart,
+    AudioOutput,
+    EndOfResponse,
+    LLMResponseChunk,
+)
 
+from src.inference.convfill_stack.run_convfill import ConvFillSystem
 from src.inference.shared.dialogue_state_manager import DialogueStateManager
 from web_demo.hf_convfill.backend import register_convfill_backend
+from web_demo.hf_convfill.delivery import AUDIO_SAMPLE_RATE_HZ, DeliveryLedgerQueue
 from web_demo.hf_convfill.handler import ConvFillRealtimeHandler, latest_user_text
 
 
@@ -36,10 +45,25 @@ class _FakeSystem:
         self.cancelled = threading.Event()
         self.reset_called = False
         self.backend_transcripts = []
+        self.interrupted = None
+        self.discarded = []
+        self.interrupted_thoughts = ["knowledge"]
         self.dialogue_state_manager = DialogueStateManager(num_history_turns=1)
 
     def set_audio_in_flight_fn(self, callback):
         self.audio_in_flight_fn = callback
+
+    def commit_interrupted_turn(self, user_text, heard_text):
+        self.interrupted = (user_text, heard_text)
+        return self.dialogue_state_manager.commit_turn(
+            user_text,
+            f"{heard_text.strip()} [interrupted by the user]",
+            self.interrupted_thoughts,
+        )
+
+    def discard_pending_turn(self, user_text):
+        self.discarded.append(user_text)
+        return self.dialogue_state_manager.rollback_turn(user_text)
 
     def run_turn(self, user_text):
         self.dialogue_state_manager.update_user_state(user_text)
@@ -228,3 +252,138 @@ def test_dialogue_state_rolls_back_pending_and_completed_turns():
 def test_backend_registration_is_idempotent():
     register_convfill_backend()
     register_convfill_backend()
+
+
+class _InterruptibleSystem(_FakeSystem):
+    """Emits one fragment, then blocks until the turn is cancelled."""
+
+    def run_turn(self, user_text):
+        self.dialogue_state_manager.update_user_state(user_text)
+        self.callbacks["on_response_fragment"]("Partial response.")
+        assert self.cancelled.wait(timeout=2.0)
+        return False
+
+
+def _deliver(ledger, text, response_key="response-one"):
+    """Simulate HF's send loop dispatching one assistant text event."""
+    ledger.put(AssistantOutputEvent(parts=[AssistantTextPart(text=text)], response_key=response_key))
+    ledger.get_nowait()
+
+
+def test_interrupted_turn_is_committed_with_what_the_user_heard():
+    cancel_scope = CancelScope()
+    handler = _handler(_InterruptibleSystem, cancel_scope=cancel_scope)
+    ledger = DeliveryLedgerQueue()
+    handler.set_delivery_ledger(ledger)
+
+    output = handler.process(_request(_FakeChat()))
+    assert isinstance(next(output), LLMResponseChunk)
+
+    _deliver(ledger, "Partial response.")
+    _deliver(ledger, "Second half.")
+    cancel_scope.cancel()
+    remaining = list(output)
+
+    assert isinstance(remaining[-1], EndOfResponse)
+    assert remaining[-1].error is None
+    assert handler.system.interrupted == ("What is ConvFill?", "Partial response. Second half.")
+    assert handler.system.discarded == []
+    assert handler.system.dialogue_state_manager.get_transcript() == (
+        "User: What is ConvFill?\n"
+        "You: Partial response. Second half. [interrupted by the user]"
+    )
+    # The ledger is released so the next response starts from a clean slate.
+    assert ledger.delivered_text("response-one") == []
+    assert ledger.audio_playing() is False
+
+
+def test_interrupted_turn_with_nothing_delivered_is_discarded():
+    cancel_scope = CancelScope()
+    handler = _handler(_InterruptibleSystem, cancel_scope=cancel_scope)
+    handler.set_delivery_ledger(DeliveryLedgerQueue())
+
+    output = handler.process(_request(_FakeChat()))
+    assert isinstance(next(output), LLMResponseChunk)
+
+    cancel_scope.cancel()
+    remaining = list(output)
+
+    assert isinstance(remaining[-1], EndOfResponse)
+    assert handler.system.interrupted is None
+    assert handler.system.discarded == ["What is ConvFill?"]
+    assert handler.system.dialogue_state_manager.user_turns == []
+
+
+def test_audio_in_flight_follows_the_delivery_ledger():
+    handler = _handler()
+    ledger = DeliveryLedgerQueue()
+    handler.set_delivery_ledger(ledger)
+    assert handler.system.audio_in_flight_fn == handler._audio_in_flight
+
+    assert handler._audio_in_flight() == 0
+
+    ledger.put(AudioOutput(audio=b"\x00\x00" * AUDIO_SAMPLE_RATE_HZ, response_key="response-one"))
+    assert handler._audio_in_flight() == 1  # queued but not yet dispatched
+    ledger.get_nowait()
+    assert handler._audio_in_flight() == 1  # dispatched and still playing
+    ledger.reset_playback()
+    assert handler._audio_in_flight() == 0
+
+    handler._response_key = "response-one"
+    handler._yielded_fragments = 1
+    assert handler._audio_in_flight() == 1  # yielded text has not reached the client
+    _deliver(ledger, "Partial response.")
+    assert handler._audio_in_flight() == 0
+
+
+def _bare_system(dialogue_state_manager):
+    system = ConvFillSystem.__new__(ConvFillSystem)
+    system.dialogue_state_manager = dialogue_state_manager
+    system.thought_queue = queue.Queue()
+    system.tts_queue = queue.Queue()
+    system._interrupted_thoughts = []
+    return system
+
+
+def test_commit_interrupted_turn_keeps_the_heard_prefix_and_stays_consistent():
+    state = DialogueStateManager(num_history_turns=1)
+    system = _bare_system(state)
+    system._interrupted_thoughts = ["<sil>", "ConvFill pairs a Talker with a Reasoner."]
+    state.update_user_state("q")
+
+    assert system.commit_interrupted_turn("q", "partial") is True
+    assert state.get_transcript() == "User: q\nYou: partial [interrupted by the user]"
+    assert len(state.user_turns) == len(state.responses) == len(state.thoughts) == 1
+    assert state.thoughts[0] == ["ConvFill pairs a Talker with a Reasoner."]
+    assert system._interrupted_thoughts == []
+
+    state.update_user_state("next")
+    assert state.get_transcript().endswith("User: next")
+    assert state.get_history() == {
+        "user_turns_history": ["q"],
+        "responses_history": ["partial [interrupted by the user]"],
+    }
+
+
+def test_commit_interrupted_turn_replaces_a_response_that_beat_the_cancel():
+    state = DialogueStateManager(num_history_turns=1)
+    system = _bare_system(state)
+    state.update_user_state("q")
+    state.update_response_state("full response that was never finished aloud")
+    state.update_thoughts_state(["knowledge"])
+
+    assert system.commit_interrupted_turn("q", "partial") is True
+    assert state.responses == ["partial [interrupted by the user]"]
+    assert state.thoughts == [["knowledge"]]
+    assert len(state.user_turns) == 1
+
+
+def test_discard_pending_turn_removes_the_turn():
+    state = DialogueStateManager(num_history_turns=1)
+    system = _bare_system(state)
+    system._interrupted_thoughts = ["knowledge"]
+    state.update_user_state("q")
+
+    assert system.discard_pending_turn("q") is True
+    assert state.user_turns == []
+    assert system._interrupted_thoughts == []

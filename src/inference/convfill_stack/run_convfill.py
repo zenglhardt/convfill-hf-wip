@@ -67,6 +67,10 @@ class ConvFillSystem:
         self._frontend_inflight = 0
         self._frontend_inflight_lock = threading.Lock()
 
+        # Reasoner knowledge consumed by a turn that was cut short. Stashed by
+        # run_frontend so commit_interrupted_turn can keep it.
+        self._interrupted_thoughts = []
+
         # setup frontend, backend, dialogue state
         print("[LOG] Setting up Dialogue State Manager\n")
         if dialogue_state_manager is not None:
@@ -101,10 +105,17 @@ class ConvFillSystem:
         q = queue.Queue()
 
         def producer():
+            # Closing the generator on cancel unwinds the provider's streaming
+            # context manager (e.g. anthropic ``messages.stream``), which aborts
+            # the HTTP stream instead of silently draining it to completion.
+            gen = self.convfill_backend.backend_infer()
             try:
-                for chunk in self.convfill_backend.backend_infer():
+                for chunk in gen:
+                    if self.cancel_event.is_set():
+                        break
                     q.put(chunk)
             finally:
+                gen.close()
                 q.put(None)
 
         threading.Thread(target=producer, daemon=True).start()
@@ -195,7 +206,7 @@ class ConvFillSystem:
             except queue.Empty:
                 continue
         if self.cancel_event.is_set():
-            self.convfill_frontend.reset_turn_state()
+            self._interrupted_thoughts = self.convfill_frontend.get_thoughts_and_reset_turn_state()
             return
         user_turn, final_response, final_thoughts = self.convfill_frontend.get_final_response_and_reset_turn_state()
         if self.on_turn_complete is not None:
@@ -217,10 +228,39 @@ class ConvFillSystem:
         frontend_thread.join()
 
         if self.cancel_event.is_set():
-            self.dialogue_state_manager.rollback_turn(user_input)
+            # The pending user turn stays in place. Only the caller knows how
+            # much of the answer reached the user, so it chooses between
+            # commit_interrupted_turn and discard_pending_turn.
             self._drain_turn_queues()
             return False
+        self._interrupted_thoughts = []
         return True
+
+    def commit_interrupted_turn(self, user_input, heard_text):
+        """Keep a barge-in turn in history as the part the user actually heard."""
+        marked = f"{heard_text.strip()} [interrupted by the user]".strip()
+        thoughts = list(self._interrupted_thoughts)
+        self._interrupted_thoughts = []
+
+        dsm = self.dialogue_state_manager
+        if dsm.user_turns and dsm.user_turns[-1] == user_input and len(dsm.responses) == len(dsm.user_turns):
+            # Cancellation raced the commit: replace the full response with the
+            # heard prefix, keeping the thoughts that were already recorded.
+            if not thoughts and dsm.thoughts:
+                thoughts = list(dsm.thoughts[-1])
+            dsm.rollback_turn(user_input)
+            dsm.update_user_state(user_input)
+
+        committed = dsm.commit_turn(user_input, marked, thoughts)
+        self._drain_turn_queues()
+        return committed
+
+    def discard_pending_turn(self, user_input):
+        """Drop a cancelled turn entirely; nothing of it was heard."""
+        self._interrupted_thoughts = []
+        removed = self.dialogue_state_manager.rollback_turn(user_input)
+        self._drain_turn_queues()
+        return removed
 
     def cancel_turn(self):
         """Cooperatively stop the active turn and prevent state commit."""
@@ -247,6 +287,7 @@ class ConvFillSystem:
         """Clear all per-session dialogue and in-flight turn state."""
         self.cancel_turn()
         self.convfill_frontend.reset_turn_state()
+        self._interrupted_thoughts = []
         self.dialogue_state_manager.reset()
         self._drain_turn_queues()
         self.done_event.clear()

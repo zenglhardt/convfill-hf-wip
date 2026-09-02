@@ -21,7 +21,7 @@ is a plain Python virtualenv (no Conda).
 | `src/inference/single_model_stack/` | Library code for running the Reasoner or Talker alone. Used by the engine, not run directly. |
 | `src/inference/rag/` | `RunRAG` plus the committed FAISS index and chunk store for `rag` mode. |
 | `src/utils/api_keys.py` | The only place API keys are read (from env vars). |
-| `web_demo/hf_convfill/` | The active adapter: `server.py` (entry point), `backend.py` (registry), `handler.py` (the LLM-stage handler), `test_handler.py`. |
+| `web_demo/hf_convfill/` | The active adapter: `server.py` (entry point), `backend.py` (registry), `handler.py` (the LLM-stage handler), `delivery.py` (the output-queue delivery ledger), tests. |
 | `web_demo/hf_interface/` | Vendored Hugging Face browser UI plus a local FastAPI static host (`server.py`, `test_server.py`). See `UPSTREAM.md`. |
 | `configs/` | Demo configs, Talker configs, Reasoner model names, Reasoner prompt templates. |
 | `scripts/` | `setup_demo.sh`, `run_web_demo.sh`. |
@@ -56,9 +56,17 @@ npm ci --prefix web_demo/hf_interface
 Extras: `rag` (faiss-cpu, sentence-transformers), `mcp`, `gemini` (google-generativeai),
 `dev` (pytest, httpx). Example: `pip install -e ".[dev,rag,mcp]"`.
 
-Models download from the Hugging Face Hub on first run: `mlx-community/parakeet-tdt-0.6b-v3` (STT),
-`mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit` (TTS), and the Talker
+Models download from the Hugging Face Hub on first run. The target speech pair for the published
+demo is `mlx-community/parakeet-tdt-0.6b-v3` (STT) and
+`mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit` (TTS). The Talker is
 `vysri/Qwen-0.6B-ConvFill_mlx_q8` (from `configs/convfill_frontend_configs/convfill_qwen3_0.6B_nd.json`).
+
+Temporary local workaround: `scripts/run_web_demo.sh` currently defaults to `faster-whisper` (STT)
+and `pocket` (TTS) because they are lighter for debugging on macOS. Those two backends are pulled in
+through the `speech-to-speech[faster-whisper,pocket]` extras in `pyproject.toml`. This is not the
+configuration intended for the Hugging Face Spaces release; do not build on it, and expect the
+defaults to return to `parakeet-tdt` / `qwen3`. Select the target pair explicitly with
+`HF_S2S_STT=parakeet-tdt HF_S2S_TTS=qwen3`.
 
 ## Running the demo
 
@@ -79,8 +87,8 @@ It resolves the interpreter from `PYTHON_BIN`, then an activated `VIRTUAL_ENV`, 
 |----------|---------|--------|
 | `CONVFILL_CONFIG` | `configs/demo_mode/convfill_simple_config.json` | Demo config passed to `ConvFillConfig`. |
 | `CONVFILL_MODE` | `normal` | Task mode: `normal`, `rag`, or `mcp`. |
-| `HF_S2S_STT` | `parakeet-tdt` | Speech recognition stage. |
-| `HF_S2S_TTS` | `qwen3` | Speech synthesis stage. |
+| `HF_S2S_STT` | `faster-whisper` (temporary; target is `parakeet-tdt`) | Speech recognition stage. |
+| `HF_S2S_TTS` | `pocket` (temporary; target is `qwen3`) | Speech synthesis stage. |
 | `S2S_PORT` | `8765` | Realtime WebSocket port. |
 | `UI_PORT` | `7860` | Browser interface port. |
 | `PYTHON_BIN` | unset | Explicit interpreter override. |
@@ -98,7 +106,7 @@ It resolves the interpreter from `PYTHON_BIN`, then an activated `VIRTUAL_ENV`, 
 npm test --prefix web_demo/hf_interface
 ```
 
-Pytest `testpaths` is limited to `web_demo/hf_convfill` and `web_demo/hf_interface`: 13 tests, no
+Pytest `testpaths` is limited to `web_demo/hf_convfill` and `web_demo/hf_interface`: 28 tests, no
 network, driven by a fake ConvFill system. The JS suite has 1 test. The legacy
 `web_demo/backend/test_tts_markdown.py` is intentionally outside `testpaths` and must stay excluded.
 Run both suites before declaring work finished.
@@ -129,13 +137,16 @@ Do not break these without understanding why they exist.
 - **Only Talker output reaches TTS.** `web_demo/hf_convfill/handler.py` yields `LLMResponseChunk`s
   solely from the `on_response_fragment` callback. Reasoner knowledge goes to `on_thought`, which
   only logs. Never route thoughts into the response stream.
-- **`<sil>` filler scheduling depends on the audio signal.** `_attach_audio_state` in
-  `web_demo/hf_convfill/server.py` monkeypatches `s2s_pipeline.build_pipeline` to wire each
-  pipeline unit's `response_playing` event into the handler, which feeds
-  `ConvFillSystem.set_audio_in_flight_fn`. `backend_fn` in
-  `src/inference/convfill_stack/run_convfill.py` emits `<sil>` only when no thought is queued, no
-  Talker inference is in flight, and no audio is playing. Removing any of the three probes makes the
-  agent talk over itself or go silent.
+- **`<sil>` filler scheduling depends on the delivery ledger.** `_attach_audio_state` in
+  `web_demo/hf_convfill/server.py` monkeypatches `s2s_pipeline.build_pipeline` and swaps each
+  pipeline unit's audio output queue (and the matching handler `queue_out`) for a
+  `DeliveryLedgerQueue` (`web_demo/hf_convfill/delivery.py`). Overriding `get` lets the ledger record
+  every assistant text event Hugging Face dispatches and advance a playhead by the duration of each
+  24 kHz int16 audio chunk, so the handler answers `ConvFillSystem.set_audio_in_flight_fn` from real
+  delivery. `backend_fn` in `src/inference/convfill_stack/run_convfill.py` emits `<sil>` only when no
+  thought is queued, no Talker inference is in flight, and no audio is in flight. Removing any of the
+  three probes makes the agent talk over itself or go silent. The ledger only overrides `get`, so
+  Hugging Face's barge-in flushes of `q.queue` under `q.mutex` still work.
 - **Backend registration order.** `register_convfill_backend()` in `web_demo/hf_convfill/backend.py`
   must run before `speech_to_speech.s2s_pipeline` is imported, because Hugging Face builds its
   argument dataclasses from the registry at import time. `server.py` enforces this ordering; keep
@@ -148,9 +159,13 @@ Do not break these without understanding why they exist.
   (`src/inference/shared/dialogue_state_manager.py`). The Hugging Face chat object only supplies the
   newest user text (`latest_user_text`) and receives the final assistant text. Do not treat the HF
   chat as the transcript.
-- **Cancellation and barge-in** go through `ConvFillSystem.cancel_turn()` plus
-  `DialogueStateManager.rollback_turn`. Every failure path in `handler.process` rolls back so a
-  dropped turn never lands in history.
+- **Cancellation and barge-in** go through `ConvFillSystem.cancel_turn()`, then exactly one of
+  `commit_interrupted_turn` or `discard_pending_turn`. The rule: if the ledger recorded any delivered
+  text for the response key, the turn is committed as the joined delivered sentences plus
+  `[interrupted by the user]`, which the Reasoner prompt templates explain; if nothing was delivered
+  the turn is rolled back, which is also what a speculative reopen needs since it replays the same
+  words under a new revision. Every other failure path in `handler.process` still rolls back through
+  `DialogueStateManager.rollback_turn`, so a dropped turn never lands in history.
 - **Lazy imports keep the base install slim.** The Gemini SDK
   (`src/inference/convfill_stack/model_inference_functions_conversational.py`), faiss and
   sentence-transformers (`convfill_backend_multi.py` -> `src/inference/rag/retreive.py`), and the

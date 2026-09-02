@@ -15,6 +15,8 @@ from speech_to_speech.utils.utils import is_out_of_band
 
 from src.inference.convfill_stack.run_convfill import ConvFillConfig, ConvFillSystem
 
+from .delivery import DeliveryLedgerQueue
+
 logger = logging.getLogger(__name__)
 
 _TurnEvent = tuple[str, Any]
@@ -61,7 +63,9 @@ class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
         self._active_events: Queue[_TurnEvent] | None = None
         self._audio_lock = threading.Lock()
         self._pending_audio_fragments = 0
-        self._response_playing: threading.Event | None = None
+        self._yielded_fragments = 0
+        self._response_key: str | None = None
+        self._ledger: DeliveryLedgerQueue | None = None
 
         callbacks = {
             "on_thought": self._on_thought,
@@ -78,19 +82,40 @@ class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
             config = ConvFillConfig(config_path, mode=mode)
             self.system = ConvFillSystem(config, **callbacks)
 
-    def set_response_playing_event(self, event: threading.Event) -> None:
-        """Connect HF's audio send-loop state to ConvFill's silence scheduler."""
-        self._response_playing = event
+    def set_delivery_ledger(self, ledger: DeliveryLedgerQueue) -> None:
+        """Connect the pipeline delivery ledger to ConvFill's silence scheduler."""
+        self._ledger = ledger
         self.system.set_audio_in_flight_fn(self._audio_in_flight)
 
     def _audio_in_flight(self) -> int:
+        ledger = self._ledger
+        if ledger is None:
+            # No transport attached (unit tests, or a caller-supplied system):
+            # fall back to counting fragments handed downstream.
+            with self._audio_lock:
+                return self._pending_audio_fragments
         with self._audio_lock:
-            if self._response_playing is not None and self._response_playing.is_set():
-                # Once downstream audio starts, the HF event remains set until
-                # every queued chunk in the response has drained.
-                self._pending_audio_fragments = 0
-                return 1
-            return self._pending_audio_fragments
+            yielded = self._yielded_fragments
+            response_key = self._response_key
+        if yielded > len(ledger.delivered_text(response_key)):
+            # Sentences are in the pipeline but have not reached the client yet.
+            return 1
+        if ledger.pending_audio() or ledger.audio_playing():
+            return 1
+        return 0
+
+    def _delivered_text(self, response_key: str | None) -> str:
+        """Everything the client was sent for *response_key*, joined."""
+        if self._ledger is None:
+            return ""
+        parts = [text.strip() for text in self._ledger.delivered_text(response_key)]
+        return " ".join(part for part in parts if part).strip()
+
+    def _release_ledger(self, response_key: str | None) -> None:
+        if self._ledger is None:
+            return
+        self._ledger.reset_playback()
+        self._ledger.clear_response(response_key)
 
     def _put(self, kind: str, payload: Any = None) -> None:
         if self._active_events is not None:
@@ -170,6 +195,8 @@ class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
         self._active_events = events
         with self._audio_lock:
             self._pending_audio_fragments = 0
+            self._yielded_fragments = 0
+            self._response_key = request.response_key
 
         def run_turn() -> None:
             try:
@@ -191,6 +218,10 @@ class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
                     if not cancelled:
                         cancelled = True
                         self.system.cancel_turn()
+                        # The client drops its playback buffer on barge-in, so
+                        # anything still scheduled is never heard.
+                        if self._ledger is not None:
+                            self._ledger.reset_playback()
                 try:
                     kind, payload = events.get(timeout=0.05)
                 except Empty:
@@ -199,6 +230,8 @@ class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
                 if kind == "fragment":
                     if not cancelled:
                         emitted.append(str(payload))
+                        with self._audio_lock:
+                            self._yielded_fragments += 1
                         yield self._chunk(request, generation, str(payload))
                 elif kind == "runner_done":
                     completed = bool(payload)
@@ -209,9 +242,18 @@ class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
 
             if self._turn_is_stale(request, generation):
                 cancelled = True
-            if cancelled and completed:
-                # Cancellation may win just after ConvFill commits its turn.
-                self.system.dialogue_state_manager.rollback_turn(user_text)
+
+            heard = ""
+            if cancelled and error is None:
+                # Commit whatever the client was actually sent, so the Reasoner
+                # can continue from it rather than repeat it. Nothing delivered
+                # means nothing was heard (a speculative reopen replays the same
+                # words under a fresh revision), so the turn is discarded.
+                heard = self._delivered_text(request.response_key)
+                if heard:
+                    self.system.commit_interrupted_turn(user_text, heard)
+                else:
+                    self.system.discard_pending_turn(user_text)
                 completed = False
 
             if completed and emitted and not is_out_of_band(request.response):
@@ -225,6 +267,16 @@ class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
                     completed = False
                 else:
                     request.runtime_config.chat.trim_if_needed()
+            elif heard and not is_out_of_band(request.response):
+                # Best effort: HF may refuse a provisional item for a cancelled
+                # response. ConvFill keeps its own commit either way.
+                try:
+                    request.runtime_config.chat.add_provisional_generation_items(
+                        request.response_key,
+                        [make_assistant_message(heard)],
+                    )
+                except Exception:
+                    logger.debug("HF chat refused the interrupted turn text", exc_info=True)
 
             error_message = None
             if error is not None:
@@ -255,10 +307,17 @@ class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
                 self.system.cancel_turn()
                 worker.join(timeout=2.0)
             self._active_events = None
+            self._release_ledger(request.response_key)
             with self._audio_lock:
                 self._pending_audio_fragments = 0
+                self._yielded_fragments = 0
+                self._response_key = None
 
     def on_session_end(self) -> None:
         self.system.reset()
+        if self._ledger is not None:
+            self._ledger.reset_playback()
         with self._audio_lock:
             self._pending_audio_fragments = 0
+            self._yielded_fragments = 0
+            self._response_key = None

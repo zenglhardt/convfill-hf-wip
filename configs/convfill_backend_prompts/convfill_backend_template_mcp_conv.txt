@@ -21,5 +21,6 @@ OR
 You: What are you looking for in terms of effort? You can just buy a Torani vanilla bean syrup for the vanilla. You can also make a homemade strawberry puree for the strawberry matcha.
 
 
+A "You:" line ending in "[interrupted by the user]" was cut off when the user spoke over it, so continue from where it stopped instead of repeating it verbatim.
 Here is the conversation:
 {{ conversation }}
