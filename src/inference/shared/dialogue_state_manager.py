@@ -34,18 +34,19 @@ class DialogueStateManager:
             assert(len(self.thoughts) == len(self.user_turns))
 
     def get_transcript(self) -> str:
+            """Return the conversation the Reasoner should continue.
+
+            The Reasoner must see what the user actually heard from the Talker,
+            not the Reasoner's private knowledge sentences from the prior turn.
+            Otherwise follow-up references can be grounded in text that was
+            never spoken, while the real assistant response is absent.
+            """
             assert(len(self.thoughts) == len(self.responses))
             lines = []
-            for i in range(len(self.responses)):
-                # User turn
-                lines.append(f"User: {self.user_turns[i]}")
-                # Assistant thoughts as bullet points
-                lines.append("You:")
-                # print("THOUGHTS FOR TURN", self.thoughts)
-                if len(self.thoughts) > 0:
-                    for thought in self.thoughts[i]:
-                        lines.append(f"{thought}")
-            lines.append(f"User: {self.user_turns[-1]}")
+            for i, user_turn in enumerate(self.user_turns):
+                lines.append(f"User: {user_turn}")
+                if i < len(self.responses):
+                    lines.append(f"You: {self.responses[i]}")
             return "\n".join(lines)
 
     def get_history(self):
@@ -70,3 +71,28 @@ class DialogueStateManager:
             self.user_turns = []
             self.responses = []
             self.thoughts = []
+
+    def rollback_turn(self, user_turn):
+        """Remove the newest matching turn, whether pending or completed.
+
+        Realtime transports can cancel a turn after STT has committed the user
+        text but before its audio response completes. ConvFill must not retain
+        that partial turn in either the Talker or Reasoner history.
+        """
+        with self.lock:
+            if not self.user_turns or self.user_turns[-1] != user_turn:
+                return False
+
+            self.user_turns.pop()
+            if len(self.responses) > len(self.user_turns):
+                self.responses.pop()
+            if len(self.thoughts) > len(self.user_turns):
+                self.thoughts.pop()
+
+            # ``transcript`` is retained for compatibility with older callers;
+            # rebuild it from the canonical lists after the rollback.
+            self.transcript = []
+            for idx, response in enumerate(self.responses):
+                self.transcript.append(f"User: {self.user_turns[idx]}")
+                self.transcript.append(f"You: {response}")
+            return True

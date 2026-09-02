@@ -48,6 +48,7 @@ class ConvFillSystem:
 
         self.thought_queue = queue.Queue()
         self.done_event = threading.Event()
+        self.cancel_event = threading.Event()
         self.tts_queue = queue.Queue()
         self.tts_model_path = convfill_config.tts_model_path if hasattr(convfill_config, 'tts_model_path') else None
 
@@ -108,7 +109,7 @@ class ConvFillSystem:
 
         threading.Thread(target=producer, daemon=True).start()
 
-        while True:
+        while not self.cancel_event.is_set():
             try:
                 chunk = q.get_nowait()
                 if chunk is None:
@@ -137,17 +138,23 @@ class ConvFillSystem:
         
 
     def run_backend(self):
-        for thought in self.backend_fn():
-            self.thought_queue.put(thought)
-            if self.on_thought is not None:
-                self.on_thought(thought)
-
-        self.done_event.set()
+        try:
+            for thought in self.backend_fn():
+                if self.cancel_event.is_set():
+                    break
+                self.thought_queue.put(thought)
+                if self.on_thought is not None:
+                    self.on_thought(thought)
+        finally:
+            self.done_event.set()
 
 
     def run_frontend(self):
         t_prev_frontend_end = time.perf_counter()
-        while not self.done_event.is_set() or not self.thought_queue.empty():
+        while (
+            not self.cancel_event.is_set()
+            and (not self.done_event.is_set() or not self.thought_queue.empty())
+        ):
             try:
                 thought = self.thought_queue.get(timeout=1)
                 if thought == "<sil>":
@@ -165,6 +172,8 @@ class ConvFillSystem:
                     self._frontend_inflight += 1
                 try:
                     for fragment in self.convfill_frontend.infer_and_update_state(thought):
+                        if self.cancel_event.is_set():
+                            break
                         if self.emit_tts:
                             cleaned = strip_markdown(fragment).strip()
                             if cleaned:
@@ -185,6 +194,9 @@ class ConvFillSystem:
                 self.thought_queue.task_done()
             except queue.Empty:
                 continue
+        if self.cancel_event.is_set():
+            self.convfill_frontend.reset_turn_state()
+            return
         user_turn, final_response, final_thoughts = self.convfill_frontend.get_final_response_and_reset_turn_state()
         if self.on_turn_complete is not None:
             self.on_turn_complete(final_response, final_thoughts)
@@ -193,6 +205,7 @@ class ConvFillSystem:
         """Run a single turn programmatically (no stdin/stdout, no TTS thread)."""
         self.dialogue_state_manager.update_user_state(user_input)
         self.done_event.clear()
+        self.cancel_event.clear()
 
         backend_thread = threading.Thread(target=self.run_backend)
         backend_thread.start()
@@ -202,3 +215,39 @@ class ConvFillSystem:
 
         backend_thread.join()
         frontend_thread.join()
+
+        if self.cancel_event.is_set():
+            self.dialogue_state_manager.rollback_turn(user_input)
+            self._drain_turn_queues()
+            return False
+        return True
+
+    def cancel_turn(self):
+        """Cooperatively stop the active turn and prevent state commit."""
+        self.cancel_event.set()
+        self.done_event.set()
+
+    def set_audio_in_flight_fn(self, callback):
+        """Replace the transport-specific audio activity probe."""
+        self.audio_in_flight_fn = callback
+
+    def _drain_turn_queues(self):
+        for q in (self.thought_queue, self.tts_queue):
+            try:
+                while True:
+                    q.get_nowait()
+                    try:
+                        q.task_done()
+                    except ValueError:
+                        pass
+            except queue.Empty:
+                pass
+
+    def reset(self):
+        """Clear all per-session dialogue and in-flight turn state."""
+        self.cancel_turn()
+        self.convfill_frontend.reset_turn_state()
+        self.dialogue_state_manager.reset()
+        self._drain_turn_queues()
+        self.done_event.clear()
+        self.cancel_event.clear()

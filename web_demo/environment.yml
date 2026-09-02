@@ -1,0 +1,17 @@
+name: hf-demo
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.11
+  - pip=25.3
+  - nodejs=24
+  - git=2.51
+  - pip:
+      # Keep the Python server on the same upstream revision as the vendored
+      # browser client in hf_interface/UPSTREAM.md.
+      - speech-to-speech @ git+https://github.com/huggingface/speech-to-speech.git@b21e54d6a845c54308bc62500b57f9a2b2aa93ac
+      - anthropic==0.100.0
+      - strip-markdown==1.3
+      - pytest==9.0.2

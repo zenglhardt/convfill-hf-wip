@@ -3,8 +3,6 @@ import json
 import re
 import string
 from jinja2 import Environment, FileSystemLoader
-from src.inference.rag.retreive import RunRAG
-from src.inference.shared.mcp_client import MCPServerSpec, MCPToolHub
 import os
 
 
@@ -20,6 +18,8 @@ class ConvFillBackend:
         self.on_rag_context = on_rag_context
         self.on_mcp_context = on_mcp_context
         if self.mode == "rag":
+            from src.inference.rag.retreive import RunRAG
+
             assert task_specific_config is not None, "task_specific_config must be provided for RAG mode"
             self.rag_index = task_specific_config["rag_index"]
             self.rag_chunks = task_specific_config["rag_chunks"]
@@ -28,6 +28,8 @@ class ConvFillBackend:
 
             self.retriever = RunRAG(self.rag_index, self.rag_chunks, embedding_model=self.embedding_model, reranker_model=self.reranker_model)
         elif self.mode == "mcp":
+            from src.inference.shared.mcp_client import MCPServerSpec, MCPToolHub
+
             assert task_specific_config is not None, "task_specific_config must be provided for MCP mode"
             server_specs = [MCPServerSpec.from_dict(d) for d in task_specific_config["mcp_servers"]]
             self.max_tool_iterations = int(task_specific_config.get("max_tool_iterations", 4))

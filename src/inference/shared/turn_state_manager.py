@@ -18,7 +18,8 @@ class TurnStateManager:
 
     def reset(self):
         self.user_turn = ""
-        self.responses = []  
+        self.responses = []
+        self.thoughts = []
     
     def user_turn_empty(self):
         return self.user_turn == ""

@@ -1,13 +1,18 @@
 import json
 import warnings
 
-# google.generativeai prints a noisy FutureWarning at import (the package is
-# deprecated in favor of google.genai). Silence just that import.
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore")
-    import google.generativeai as genai
 import anthropic
 from src.inference.convfill_stack.conversational_stream_parser import ConversationalStreamParser
+
+
+def _load_google_generativeai():
+    """Import the optional Gemini SDK only when that provider is selected."""
+    # google.generativeai prints a noisy FutureWarning at import (the package is
+    # deprecated in favor of google.genai). Silence just that import.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        import google.generativeai as genai
+    return genai
 
 
 def _llm_send(provider: str, model: str, payload: dict) -> None:
@@ -128,6 +133,7 @@ class BackendInference:
 
 class GeminiInference:
     def __init__(self, api_key, model_name="gemini-2.5-flash-lite-preview-09-2025"):
+        genai = _load_google_generativeai()
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel(model_name)
         self.model_name = model_name

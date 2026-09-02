@@ -41,14 +41,14 @@ Because the user interacts only with the fast local Talker, the agent stays resp
 ## Where to go next
 
 - [Python Environment Setup](#python-environment-setup) — install dependencies for training and inference.
-- [Live Demo Instructions](#live-demo-instructions) — run the end-to-end voice demo (API keys, Node, FFMPEG, TTS).
+- [Live Demo Instructions](#live-demo-instructions) — run the Hugging Face realtime voice demo with Claude Haiku.
 - [Training a `Talker` Model](#training-a-talker-model) — prepare data, fine-tune, and the list of supported models.
 - [Details for Developers or Tinkerers](#details-for-developers-or-tinkerers) — code/config structure, adding models, and advanced demo setup (RAG, MCP, custom Reasoner APIs).
 - [Citation & License](#citation--license) — how to cite ConvFill and licensing.
 
 # Python Environment Setup
 
-Run the following commands from the root of the repository to get the necessary packages set up. ConvFill expects Python 3.11. Use either a Conda environment or a virtual environment. This environment works for both training and inference/demos.
+Run the following commands from the root of the repository to get the necessary packages set up. ConvFill expects Python 3.11. Use either a Conda environment or a virtual environment. This environment works for training and the original ConvFill inference stack. The realtime speech demo uses a separate environment because Hugging Face's speech package owns a newer set of audio/model dependency pins.
 
 ```bash
 # Option A: create and activate a Conda environment
@@ -70,76 +70,82 @@ python -m pip install -e .
 
 # Live Demo Instructions
 
-## Dependencies
-This web demo requires external APIs for `Reasoner` models and Node.js for the web frontend in addition to the Python environment described above. The final step for installing RAG and MCP features is optional.
+On this branch, the browser demo is replaced by Hugging Face's realtime
+[speech-to-speech](https://github.com/huggingface/speech-to-speech) interface and
+audio pipeline:
 
-### LLM API Keys
-Make sure you have set API keys in your environment for whichever providers you'll use (Claude, OpenAI, or Gemini).
-We recommend you use a secure method, such as those outlined in OpenAI's
-[API key safety guidance](https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safety).
+1. Silero VAD detects turns.
+2. Parakeet TDT transcribes speech locally.
+3. Claude Haiku streams concise knowledge as the background `Reasoner`.
+4. The local, fine-tuned ConvFill `Talker` turns each knowledge update (or a
+   `<sil>` filler signal) into the phrase the user actually hears.
+5. Qwen3-TTS synthesizes and streams each Talker phrase locally.
 
-To manually set the API key environment variables temporarily for your current shell session, see below:
+The browser sends and receives 24 kHz PCM audio over the project's
+OpenAI-Realtime-compatible WebSocket protocol. An in-repo Hugging Face backend
+adapter reuses `ConvFillSystem`; it does not send STT output directly to Claude.
 
-```bash
-export ANTHROPIC_API_KEY="your-anthropic-api-key"
-export OPENAI_API_KEY="your-openai-api-key"
-export GEMINI_API_KEY="your-gemini-api-key"
-```
-### Node Setup
-The web demo frontend expects Node.js 24. If you use `nvm`, you can run the following from the repository root:
+## Speech demo environment
 
-```bash
-nvm install
-nvm use
-```
-If you don't have NVM/Node.js installed, follow the [NVM download guide](https://www.nvmnode.com/guide/download.html),
-then return here and run the `nvm install` / `nvm use` commands above. If you have a different Node setup, make sure
-`node -v` shows `v24.x`. 
-
-Then install the npm dependencies directly:
+Create the dedicated `hf-demo` Conda environment from the checked-in definition.
+This keeps the speech package's Torch, Transformers, MLX, and audio pins separate
+from the `convfill` training environment:
 
 ```bash
-cd web_demo/frontend
-npm ci
-cd ../..
+conda env create -f web_demo/environment.yml
+conda activate hf-demo
+npm ci --prefix web_demo/hf_interface
 ```
 
-### FFMPEG
-FFMPEG is required to handle audio files for speech transcription. Make sure you have it installed and added to your path. Installation instructions can be found here: [FFMPEG download and installation](https://www.ffmpeg.org/download.html).
-
-### TTS Configuration (Non-macOS)
-This step can be skipped if running macOS. The web demo uses text-to-speech (TTS) to synthesize audio responses. The demo defaults to using the built-in TTS engine in macOS. You can choose between TTS engines by editing the `tts_mode` field in `configs/demo_mode/*.json`: 
-
-**Available TTS engines:**
-
-| Engine | `tts_mode` | Setup | Notes |
-|--------|-----------|-------|-------|
-| macOS `say` | `"say"` | None | Uses native macOS voice synthesis. Audio plays on server; no PCM streamed to browser. Requires macOS. |
-| Piper | `"piper"` | Place model files in `src/tts/voices/` | ONNX-based neural TTS. Streams PCM audio to browser. Works cross-platform. |
-
-**To use Piper TTS (cross-platform):**
-
-1. Download a Piper model (e.g., from [rhasspy.github.io/piper-samples](https://rhasspy.github.io/piper-samples/)). You need the `.onnx` file and its corresponding `.onnx.json` config.
-
-2. Place the two files in the `src/tts/voices/` directory
-
-3. Set `tts_mode` to `"piper"` in your config:
-   ```json
-   "tts_mode": "piper"
-   ```
-
-4. Restart the web demo for the change to take effect.
-
-## Starting the Demo
-
-You should now be able to launch the web demo by running the following from the project root: 
+After the YAML changes, update the existing environment with:
 
 ```bash
-bash scripts/run_web_demo.sh 
+conda env update -n hf-demo -f web_demo/environment.yml --prune
 ```
 
-This launches a frontend at: `http://127.0.0.1:5173` (open this in Google Chrome)
+The first launch downloads the selected local STT and TTS models from the
+Hugging Face Hub. On Apple Silicon, the package automatically selects its MLX
+implementations. See the upstream
+[installation notes](https://github.com/huggingface/speech-to-speech#installation)
+for Linux/CUDA-specific Qwen3-TTS wheels.
 
+## API key
+
+The launcher requires `ANTHROPIC_API_KEY` in the environment. It never reads
+`~/.secret` and no key is stored in the repository. If `~/.secret` is a
+shell-compatible file that exports the key, load it manually before starting:
+
+```bash
+conda activate hf-demo
+source ~/.secret
+test -n "$ANTHROPIC_API_KEY"
+```
+
+Alternatively, export `ANTHROPIC_API_KEY` directly in the current shell.
+
+## Starting the demo
+
+```bash
+conda activate hf-demo
+bash scripts/run_web_demo.sh
+```
+
+Open `http://127.0.0.1:7860` in Chrome or Edge, click the orb, and allow
+microphone access. The launcher binds both services to loopback only and stops
+them together on Ctrl+C.
+
+Defaults can be overridden without editing code:
+
+```bash
+CONVFILL_CONFIG=configs/demo_mode/convfill_simple_config.json \
+CONVFILL_MODE=normal \
+HF_S2S_STT=parakeet-tdt \
+HF_S2S_TTS=qwen3 \
+bash scripts/run_web_demo.sh
+```
+
+The interface source and its Apache-2.0 attribution are documented in
+`web_demo/hf_interface/UPSTREAM.md`.
 
 # Training a `Talker` Model
 
@@ -236,18 +242,18 @@ These are the models we have tested as ConvFill `Talker`s, but they are not the 
 ## Inference Code Structure
 
 * `src/inference/convfill_stack` contains the full ConvFill stack — the small local ```Talker``` model running alongside a large ```Reasoner``` model.
-* `src/inference/convfill_stack/run_convfill.py` defines the system configuration and core classes (`ConvFillConfig`, `ConvFillSystem`) used by the web demo.
+* `src/inference/convfill_stack/run_convfill.py` defines the original system configuration and core classes (`ConvFillConfig`, `ConvFillSystem`).
 * `src/inference/convfill_stack/convfill_backend_multi.py` drives the `Reasoner` across the `normal`, `rag`, and `mcp` task modes.
 * `src/inference/shared` contains components shared across stacks — the conversation engine (`convfill_engine.py`), dialogue/turn state managers, and the MCP client (`mcp_client.py`).
 * `src/inference/single_model_stack` contains library code for running a single model on its own — `large_model_only/` (cloud `Reasoner`) and `small_model_only/` (local `Talker`). These are used by the engine; they are not run directly.
 * `src/inference/rag` contains the retrieval module (`retreive.py`, exposing `RunRAG`) plus the committed FAISS index (`uw_phd.index`) and chunk store (`uw_chunks.json`) used in `rag` task mode.
-* `web_demo` contains the browser demo: a FastAPI backend (`web_demo/backend`) and a React + Vite frontend (`web_demo/frontend`).
+* `web_demo/hf_interface` contains the active Hugging Face realtime browser interface and its small FastAPI static host. `web_demo/backend` and `web_demo/frontend` retain the previous custom demo for reference.
 
 
 ## Configs
 
 * `configs/convfill_frontend_configs` — `Talker` (local) model training/inference configs, one per model size (see the table below).
-* `configs/demo_mode` — unified runtime config for the demo: `convfill_overall_config.json`. Selects the `Talker`, `Reasoner`, and prompt template for all task modes (normal, rag, mcp). Top-level fields apply to all modes; mode-specific fields (`Reasoner` prompt, RAG/MCP config) are nested under `modes.<name>`.
+* `configs/demo_mode` — runtime configs consumed by both the ConvFill engine and the Hugging Face realtime adapter. They select the Talker, Reasoner, prompt, and task mode.
 * `configs/backend_model_configs` — available cloud `Reasoner` model names per provider (`claude/`, `openai/`, `gemini/`).
 * `configs/convfill_backend_prompts` — `Reasoner` prompt templates for the ConvFill stack (the `*_conv.txt` files).
 * `configs/backend_only_prompts` — prompt templates for `Reasoner`-only single-model runs.
@@ -267,67 +273,18 @@ The key fields for inference are:
 
 The weight paths can be either HuggingFace model IDs (e.g., `"vysri/gemma3-270m-IT-ConvFill"`) or local filesystem paths (e.g., `"/path/to/local/weights"`).
 
-## Advanced Demo Setup
+## Realtime ConvFill Adapter
 
-The default `normal` task mode needs no extra setup. The `rag` and `mcp` modes each require a one-time setup before you can run them in the web demo. 
+`web_demo/hf_convfill` registers a `convfill` LLM-stage backend with the pinned
+Hugging Face speech package. That adapter passes final Parakeet transcripts into
+the existing `ConvFillSystem`, forwards only Talker phrases to Qwen3-TTS, and
+uses Hugging Face's response-playing signal to preserve ConvFill's `<sil>`
+filler scheduling.
 
-### RAG mode
-
-RAG mode retrieves context from a vector index before each `Reasoner` response. At query time it embeds the user's turn with OpenAI's `text-embedding-3-large`, so it **requires an OpenAI API key** — even if your `Reasoner` is Claude or Gemini.
-
-1. Export `OPENAI_API_KEY` in your environment (see [LLM API Keys](#llm-api-keys)).
-2. The retrieval assets are already committed — `src/inference/rag/uw_phd.index` (FAISS index) and `src/inference/rag/uw_chunks.json` (chunk store) — and the local reranker (`cross-encoder/ms-marco-MiniLM-L-6-v2`) downloads automatically on first use. You can select RAG mode in the web demo UI.
-
-### MCP mode
-
-MCP mode lets the `Reasoner` call tools exposed by external [Model Context Protocol](https://modelcontextprotocol.io) servers. Those servers are **separate external repos** that you download and run yourself, then wire into `configs/demo_mode/convfill_overall_config.json` under `modes.mcp.task_specific_config`.
-
-The default config wires up the [`mail-mcp`](https://github.com/tecnologicachile/mail-mcp) email server (**v0.4.5**, vendored under `external/mail-mcp`). We ran it via Docker in our examples:
-
-```jsonxw
-"mcp_servers": [
-  {
-    "name": "mail",
-    "transport": "stdio",
-    "command": "docker",
-    "args": ["exec", "-i", "gmail-mcp", "mail-mcp"],
-    "env": {}
-  }
-]
-```
-
-To use it, follow the setup instructions in [`mail-mcp` v0.4.5](https://github.com/tecnologicachile/mail-mcp) (pick whichever method you prefer — Docker, native binary, etc.), then update `command` and `args` in the config to match how you launch it.
-
-To add other MCP servers, download them and add an entry to the `mcp_servers` list with the appropriate `command`, `args`, and `env`. `max_tool_iterations` caps how many tool calls the `Reasoner` may chain per turn. You can select MCP mode in the web demo UI.
-
-### Customizing the `Reasoner` (Backend API) Model
-
-Set the `Reasoner` via `backend_model_name` / `backend_model_mode` in `configs/demo_mode/convfill_overall_config.json` (top-level fields). Available names per provider (`configs/backend_model_configs/<provider>/model_names.json`):
-
-| Provider (`backend_model_mode`) | Model names |
-|---------------------------------|-------------|
-| `claude` | `claude-haiku-4-5-20251001`, `claude-opus-4-7`, `claude-sonnet-4-6` |
-| `openai` | `gpt-4o`, `gpt-4-turbo`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt5.4-nano` |
-| `gemini` | `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-3-flash-preview`, `gemini-3.1-flash-lite-preview`, `gemini-3.1-pro-preview` |
-
-### Launching Full Configuration
-
-```bash
-bash scripts/run_web_demo.sh [config_path]
-```
-
-Where `config_path` is optional and defaults to `configs/demo_mode/convfill_simple_config.json`. Examples:
-
-```bash
-bash scripts/run_web_demo.sh                                            
-# uses default config like in the simple mode above
-bash scripts/run_web_demo.sh configs/demo_mode/convfill_full_config.json 
-# uses full config used in paper with MCP/RAG set up here in this section
-```
-
-This launches:
-- FastAPI backend: `http://127.0.0.1:8000`
-- Vite frontend: `http://127.0.0.1:5173` (open this in Google Chrome)
+Both demo configs default the Reasoner to `claude-haiku-4-5-20251001`. The
+previous FastAPI/React demo remains under `web_demo/backend` and
+`web_demo/frontend` for comparison, but the active interface and transport are
+the Hugging Face versions.
 
 # Citation & License
 
@@ -345,4 +302,4 @@ If you use ConvFill, the dataset, or the released models in your work, please ci
 }
 ```
 
-This code is released under the MIT License — see [`LICENSE`](LICENSE) for details.
+ConvFill code is released under the MIT License — see [`LICENSE`](LICENSE). The vendored Hugging Face browser interface is Apache-2.0; see [`web_demo/hf_interface/UPSTREAM.md`](web_demo/hf_interface/UPSTREAM.md) and its retained license.

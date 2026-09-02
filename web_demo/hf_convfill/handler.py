@@ -1,0 +1,264 @@
+from __future__ import annotations
+
+import logging
+import threading
+from queue import Empty, Queue
+from typing import Any, Callable, Iterator
+
+from strip_markdown import strip_markdown
+
+from speech_to_speech.baseHandler import BaseHandler
+from speech_to_speech.LLM.chat import make_assistant_message
+from speech_to_speech.pipeline.handler_types import LLMIn, LLMOut
+from speech_to_speech.pipeline.messages import EndOfResponse, LLMResponseChunk
+from speech_to_speech.utils.utils import is_out_of_band
+
+from src.inference.convfill_stack.run_convfill import ConvFillConfig, ConvFillSystem
+
+logger = logging.getLogger(__name__)
+
+_TurnEvent = tuple[str, Any]
+_SystemFactory = Callable[..., Any]
+
+
+def latest_user_text(chat: Any) -> str:
+    """Return the newest text user message from an HF realtime Chat snapshot."""
+    for message in reversed(chat.to_transformers_chat()):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content", "")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = [
+                str(part.get("text", "")).strip()
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "input_text"
+            ]
+            return " ".join(part for part in parts if part).strip()
+    return ""
+
+
+class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
+    """Use the existing Talker/Reasoner system as an HF realtime LLM stage.
+
+    The handler consumes the final STT transcript already stored in the
+    realtime session chat. ConvFill runs Haiku and the local Talker exactly as
+    it does in the original demo; only Talker fragments leave this stage.
+    """
+
+    def setup(
+        self,
+        config_path: str = "configs/demo_mode/convfill_simple_config.json",
+        mode: str = "normal",
+        cancel_scope: Any = None,
+        speculative_turns: Any = None,
+        system_factory: _SystemFactory | None = None,
+        **_kwargs: Any,
+    ) -> None:
+        self.cancel_scope = cancel_scope
+        self.speculative_turns = speculative_turns
+        self._active_events: Queue[_TurnEvent] | None = None
+        self._audio_lock = threading.Lock()
+        self._pending_audio_fragments = 0
+        self._response_playing: threading.Event | None = None
+
+        callbacks = {
+            "on_thought": self._on_thought,
+            "on_response_fragment": self._on_response_fragment,
+            "on_turn_complete": self._on_turn_complete,
+            "on_frontend_inference": self._on_frontend_inference,
+            "on_phrase_start": self._on_phrase_start,
+            "emit_tts": False,
+            "audio_in_flight_fn": self._audio_in_flight,
+        }
+        if system_factory is not None:
+            self.system = system_factory(**callbacks)
+        else:
+            config = ConvFillConfig(config_path, mode=mode)
+            self.system = ConvFillSystem(config, **callbacks)
+
+    def set_response_playing_event(self, event: threading.Event) -> None:
+        """Connect HF's audio send-loop state to ConvFill's silence scheduler."""
+        self._response_playing = event
+        self.system.set_audio_in_flight_fn(self._audio_in_flight)
+
+    def _audio_in_flight(self) -> int:
+        with self._audio_lock:
+            if self._response_playing is not None and self._response_playing.is_set():
+                # Once downstream audio starts, the HF event remains set until
+                # every queued chunk in the response has drained.
+                self._pending_audio_fragments = 0
+                return 1
+            return self._pending_audio_fragments
+
+    def _put(self, kind: str, payload: Any = None) -> None:
+        if self._active_events is not None:
+            self._active_events.put((kind, payload))
+
+    def _on_thought(self, thought: str) -> None:
+        if thought != "<sil>":
+            logger.info("ConvFill Reasoner knowledge: %s", thought)
+
+    def _on_response_fragment(self, text: str) -> None:
+        cleaned = strip_markdown(text).strip()
+        if not cleaned:
+            return
+        with self._audio_lock:
+            self._pending_audio_fragments += 1
+        self._put("fragment", cleaned)
+
+    def _on_turn_complete(self, final_response: str, final_thoughts: list[str]) -> None:
+        # ConvFill has already committed this turn to its dialogue manager.
+        # ``process`` waits for ``run_turn`` itself, so no extra queue sentinel
+        # is needed here.
+        return
+
+    def _on_frontend_inference(self, *_args: Any, **_kwargs: Any) -> None:
+        return
+
+    def _on_phrase_start(self, *_args: Any, **_kwargs: Any) -> None:
+        return
+
+    def _turn_is_stale(self, request: Any, generation: int | None) -> bool:
+        if generation is not None and self.cancel_scope is not None:
+            if self.cancel_scope.is_stale(generation):
+                return True
+        if self.speculative_turns is not None:
+            return not self.speculative_turns.is_latest(request.turn_id, request.turn_revision)
+        return False
+
+    @staticmethod
+    def _chunk(request: Any, generation: int | None, text: str) -> LLMResponseChunk:
+        return LLMResponseChunk(
+            text=text,
+            language_code=request.language_code,
+            runtime_config=request.runtime_config,
+            response=request.response,
+            turn_id=request.turn_id,
+            turn_revision=request.turn_revision,
+            speech_stopped_at_s=request.speech_stopped_at_s,
+            cancel_generation=generation,
+            response_key=request.response_key,
+            prefetch_transaction=request.prefetch_transaction,
+        )
+
+    def process(self, request: LLMIn) -> Iterator[LLMOut]:
+        generation = self.cancel_scope.generation if self.cancel_scope is not None else None
+        if is_out_of_band(request.response):
+            yield EndOfResponse(
+                turn_id=request.turn_id,
+                turn_revision=request.turn_revision,
+                cancel_generation=generation,
+                response_key=request.response_key,
+                error="ConvFill does not support out-of-band responses.",
+            )
+            return
+
+        user_text = latest_user_text(request.runtime_config.chat)
+        if not user_text:
+            yield EndOfResponse(
+                turn_id=request.turn_id,
+                turn_revision=request.turn_revision,
+                cancel_generation=generation,
+                response_key=request.response_key,
+                error="ConvFill received no transcribed user text.",
+            )
+            return
+
+        events: Queue[_TurnEvent] = Queue()
+        self._active_events = events
+        with self._audio_lock:
+            self._pending_audio_fragments = 0
+
+        def run_turn() -> None:
+            try:
+                completed = bool(self.system.run_turn(user_text))
+                events.put(("runner_done", completed))
+            except BaseException as exc:
+                events.put(("runner_error", exc))
+
+        worker = threading.Thread(target=run_turn, daemon=True, name="convfill-realtime-turn")
+        worker.start()
+
+        emitted: list[str] = []
+        completed = False
+        cancelled = False
+        error: BaseException | None = None
+        try:
+            while worker.is_alive() or not events.empty():
+                if self._turn_is_stale(request, generation):
+                    if not cancelled:
+                        cancelled = True
+                        self.system.cancel_turn()
+                try:
+                    kind, payload = events.get(timeout=0.05)
+                except Empty:
+                    continue
+
+                if kind == "fragment":
+                    if not cancelled:
+                        emitted.append(str(payload))
+                        yield self._chunk(request, generation, str(payload))
+                elif kind == "runner_done":
+                    completed = bool(payload)
+                elif kind == "runner_error":
+                    error = payload
+
+            worker.join()
+
+            if self._turn_is_stale(request, generation):
+                cancelled = True
+            if cancelled and completed:
+                # Cancellation may win just after ConvFill commits its turn.
+                self.system.dialogue_state_manager.rollback_turn(user_text)
+                completed = False
+
+            if completed and emitted and not is_out_of_band(request.response):
+                assistant = make_assistant_message(" ".join(emitted).strip())
+                recorded = request.runtime_config.chat.add_provisional_generation_items(
+                    request.response_key,
+                    [assistant],
+                )
+                if recorded is None:
+                    self.system.dialogue_state_manager.rollback_turn(user_text)
+                    completed = False
+                else:
+                    request.runtime_config.chat.trim_if_needed()
+
+            error_message = None
+            if error is not None:
+                self.system.dialogue_state_manager.rollback_turn(user_text)
+                completed = False
+                logger.error(
+                    "ConvFill realtime turn failed",
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+                error_message = f"ConvFill turn failed: {error}"
+            elif not cancelled and not completed:
+                self.system.dialogue_state_manager.rollback_turn(user_text)
+                error_message = "ConvFill did not complete the response."
+            elif completed and not emitted:
+                self.system.dialogue_state_manager.rollback_turn(user_text)
+                completed = False
+                error_message = "ConvFill completed without producing a Talker response."
+
+            yield EndOfResponse(
+                turn_id=request.turn_id,
+                turn_revision=request.turn_revision,
+                cancel_generation=generation,
+                response_key=request.response_key,
+                error=error_message,
+            )
+        finally:
+            if worker.is_alive():
+                self.system.cancel_turn()
+                worker.join(timeout=2.0)
+            self._active_events = None
+            with self._audio_lock:
+                self._pending_audio_fragments = 0
+
+    def on_session_end(self) -> None:
+        self.system.reset()
+        with self._audio_lock:
+            self._pending_audio_fragments = 0
