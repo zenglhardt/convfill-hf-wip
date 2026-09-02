@@ -12,33 +12,50 @@ HF_S2S_STT="${HF_S2S_STT:-parakeet-tdt}"
 HF_S2S_TTS="${HF_S2S_TTS:-qwen3}"
 CONVFILL_CONFIG="${CONVFILL_CONFIG:-configs/demo_mode/convfill_simple_config.json}"
 CONVFILL_MODE="${CONVFILL_MODE:-normal}"
-EXPECTED_CONDA_ENV="${HF_DEMO_CONDA_ENV:-hf-demo}"
 
 cd "$REPO_ROOT"
 
-if [ "${CONDA_DEFAULT_ENV:-}" != "$EXPECTED_CONDA_ENV" ]; then
-  echo "[error] The speech demo must run in the '$EXPECTED_CONDA_ENV' Conda environment." >&2
-  echo "Run: conda activate $EXPECTED_CONDA_ENV" >&2
+# Resolve the interpreter: an explicit override, an already-activated venv, or
+# the repo-local .venv created by scripts/setup_demo.sh.
+if [ -n "${PYTHON_BIN:-}" ]; then
+  :
+elif [ -n "${VIRTUAL_ENV:-}" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then
+  PYTHON_BIN="$VIRTUAL_ENV/bin/python"
+elif [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+  PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
+else
+  echo "[error] No Python environment found for the speech demo." >&2
+  echo "Run: bash scripts/setup_demo.sh" >&2
   exit 1
 fi
 
-PYTHON_BIN="${PYTHON_BIN:-$CONDA_PREFIX/bin/python}"
-export NLTK_DATA="${NLTK_DATA:-$CONDA_PREFIX/share/nltk_data}"
+if [ ! -x "$PYTHON_BIN" ]; then
+  echo "[error] PYTHON_BIN='$PYTHON_BIN' is not an executable interpreter." >&2
+  exit 1
+fi
+
+if [ -z "${NLTK_DATA:-}" ]; then
+  NLTK_DATA="$("$PYTHON_BIN" -c 'import sys, os; print(os.path.join(sys.prefix, "share", "nltk_data"))')"
+fi
+export NLTK_DATA
 
 if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
   echo "[error] ANTHROPIC_API_KEY is not set." >&2
-  echo "Load ~/.secret manually in this shell, then run this script again." >&2
+  echo "Export it in this shell, then run this script again:" >&2
+  echo "  export ANTHROPIC_API_KEY=..." >&2
   exit 1
 fi
 
 if ! "$PYTHON_BIN" -c 'import speech_to_speech, anthropic, strip_markdown; import web_demo.hf_convfill' >/dev/null 2>&1; then
-  echo "[error] ConvFill speech dependencies are not installed in '$EXPECTED_CONDA_ENV'." >&2
-  echo "Create or update it from web_demo/environment.yml." >&2
+  echo "[error] ConvFill speech dependencies are not installed in '$("$PYTHON_BIN" -c "import sys; print(sys.prefix)")'." >&2
+  echo "Run: bash scripts/setup_demo.sh" >&2
   exit 1
 fi
 
 if [ ! -d "$UI_DIR/node_modules" ]; then
   echo "[error] Browser dependencies are missing. Run:" >&2
+  echo "  bash scripts/setup_demo.sh" >&2
+  echo "or, for the browser interface alone:" >&2
   echo "  npm ci --prefix web_demo/hf_interface" >&2
   exit 1
 fi

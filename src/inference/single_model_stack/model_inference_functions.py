@@ -1,10 +1,26 @@
 import json
 import warnings
 
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore")
-    import google.generativeai as genai
 import anthropic
+
+
+class _LazyGenai:
+    """Import the optional Gemini SDK on first use so Claude/OpenAI paths don't need it."""
+
+    _module = None
+
+    def __getattr__(self, name):
+        if _LazyGenai._module is None:
+            # google.generativeai prints a noisy FutureWarning at import (the package is
+            # deprecated in favor of google.genai). Silence just that import.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                import google.generativeai as module
+            _LazyGenai._module = module
+        return getattr(_LazyGenai._module, name)
+
+
+genai = _LazyGenai()
 
 
 def _llm_send(provider: str, model: str, payload: dict) -> None:

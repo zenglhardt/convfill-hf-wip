@@ -1,6 +1,5 @@
 {
     "frontend_model_config_path": "configs/convfill_frontend_configs/convfill_qwen3_0.6B_nd.json",
-    "frontend_checkpoint_dir": "final_model_checkpoints",
     "backend_model_name": "claude-haiku-4-5-20251001",
     "backend_model_mode": "claude",
     "num_history_turns": 1,

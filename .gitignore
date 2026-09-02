@@ -5,7 +5,8 @@ __pycache__
 smollm-streaming/
 */.env
 .DS_Store
-.venv
+.venv/
+*.egg-info/
 
 
 */.DS_Store

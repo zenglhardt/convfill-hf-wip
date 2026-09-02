@@ -7,7 +7,7 @@
   <a href="https://huggingface.co/collections/vysri/convfill-inference-time-knowledge-transfer"><img src="https://img.shields.io/badge/🤗%20HuggingFace-Collection-yellow?style=flat" alt="HuggingFace Collection" /></a>
 </p>
 
-**ConvFill** is a system for building voice agents that respond instantly *and* answer accurately — two goals that are normally at odds. It pairs a small, fast language model running locally with a large cloud model that does the heavy reasoning in the background, so the agent can start talking right away and fill in well-grounded answers as they become available. This repository contains the full system, a live voice demo, seven ready-to-use models, and everything needed to train your own.
+**ConvFill** is a system for building voice agents that respond instantly *and* answer accurately — two goals that are normally at odds. It pairs a small, fast language model running locally with a large cloud model that does the heavy reasoning in the background, so the agent can start talking right away and fill in well-grounded answers as they become available. This repository contains the full system, a live voice demo, and seven ready-to-use models.
 
 <p align="center">
   <img src="assets/teaser.png" width="300" alt="Teaser" />
@@ -29,48 +29,72 @@ Because the user interacts only with the fast local Talker, the agent stays resp
 - 💡 **A new task: conversational infill.** A small on-device model carries the conversation while a large cloud model supplies knowledge in the background — keeping voice agents responsive without giving up the capabilities of frontier models. The full formulation, evaluation, and a user study are in the [paper](https://arxiv.org/abs/2511.07397).
 - 📊 **A dataset built for the task.** The [ConvFill dataset](https://huggingface.co/datasets/zenglhardt/convfill-dataset) ([GitHub](https://github.com/zenglhardt/convfill-dataset)) contains 290k validated training examples across six domains, produced and verified by our synthetic data pipeline.
 - 🤗 **Seven ready-to-use models.** Fine-tuned Talkers spanning the Qwen, Llama, Gemma, and SmolLM families (135M–1.7B parameters) are published in the [HuggingFace collection](https://huggingface.co/collections/vysri/convfill-inference-time-knowledge-transfer).
-- 🔌 **Model-agnostic and modular.** Train any compatible small model as a Talker, and pair it with any frontier model (Claude, OpenAI, or Gemini) as the Reasoner — swapping the Reasoner needs no retraining.
+- 🔌 **Model-agnostic and modular.** Pair any of the released Talkers with any frontier model (Claude, OpenAI, or Gemini) as the Reasoner — swapping the Reasoner needs no retraining.
 - ⚡ **Runs on consumer hardware.** Talkers are quantized for laptops and Apple Silicon (via MLX); the system is evaluated on a MacBook with an M2 chip.
 
 ## What's in this repo
 
 - **A live voice demo** — an end-to-end, browser-based speech-to-speech agent (speech recognition → `Talker` + `Reasoner` → text-to-speech), with optional document retrieval (RAG) and external tool use over [MCP](https://modelcontextprotocol.io).
 - **The full inference stack** — the code that runs the `Talker` + `Reasoner` system at inference time, including the conversation engine, knowledge streaming, and the RAG and MCP integrations.
-- **A training pipeline** — scripts and configs to fine-tune your own `Talker` model(s), plus tooling to preprocess raw conversations into the training format.
 
 ## Where to go next
 
-- [Python Environment Setup](#python-environment-setup) — install dependencies for training and inference.
+- [Python Environment Setup](#python-environment-setup) — create the virtual environment and install the demo.
 - [Live Demo Instructions](#live-demo-instructions) — run the Hugging Face realtime voice demo with Claude Haiku.
-- [Training a `Talker` Model](#training-a-talker-model) — prepare data, fine-tune, and the list of supported models.
 - [Details for Developers or Tinkerers](#details-for-developers-or-tinkerers) — code/config structure, adding models, and advanced demo setup (RAG, MCP, custom Reasoner APIs).
 - [Citation & License](#citation--license) — how to cite ConvFill and licensing.
 
 # Python Environment Setup
 
-Run the following commands from the root of the repository to get the necessary packages set up. ConvFill expects Python 3.11. Use either a Conda environment or a virtual environment. This environment works for training and the original ConvFill inference stack. The realtime speech demo uses a separate environment because Hugging Face's speech package owns a newer set of audio/model dependency pins.
+The demo runs in a plain Python virtual environment (Python 3.11 or 3.12) plus
+Node.js 24 for the browser interface. No Conda is required.
+
+One-shot setup from the repository root:
 
 ```bash
-# Option A: create and activate a Conda environment
-conda create -n convfill python=3.11
-conda activate convfill
+bash scripts/setup_demo.sh
 ```
-OR
+
+The script creates `.venv`, installs this project in editable mode together with
+the pinned Hugging Face [speech-to-speech](https://github.com/huggingface/speech-to-speech)
+package, downloads the NLTK assets the speech pipeline needs, and runs `npm ci`
+for the browser interface. It is safe to re-run. Set `PYTHON=/path/to/python3.12`
+to pick a specific interpreter.
+
+The manual equivalent is:
+
 ```bash
-# Option B: create and activate a virtual environment
-python3.11 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+python -m nltk.downloader -d .venv/share/nltk_data punkt_tab averaged_perceptron_tagger_eng
+npm ci --prefix web_demo/hf_interface
 ```
-After creating/activating your environment, run:
 
-```bash
-python -m pip install -r requirements.txt
-python -m pip install -e .
-```
+Optional extras add the non-default task modes and providers:
+
+| Extra | Enables |
+|-------|---------|
+| `rag` | FAISS retrieval (`rag` task mode) |
+| `mcp` | Tool use over [MCP](https://modelcontextprotocol.io) (`mcp` task mode) |
+| `gemini` | Gemini as the `Reasoner` |
+| `dev` | `pytest` for the adapter and interface tests |
+
+For example, `python -m pip install -e ".[dev,rag,mcp]"`.
+
+The browser interface expects Node.js 24 (`.nvmrc`). With `nvm`, run `nvm install`
+then `nvm use` from the repository root.
+
+The first launch downloads the local STT, TTS, and `Talker` models from the
+Hugging Face Hub. On Apple Silicon the speech package automatically selects its
+MLX implementations. See the upstream
+[installation notes](https://github.com/huggingface/speech-to-speech#installation)
+for Linux/CUDA-specific Qwen3-TTS wheels.
 
 # Live Demo Instructions
 
-On this branch, the browser demo is replaced by Hugging Face's realtime
+The browser demo is built on Hugging Face's realtime
 [speech-to-speech](https://github.com/huggingface/speech-to-speech) interface and
 audio pipeline:
 
@@ -85,50 +109,28 @@ The browser sends and receives 24 kHz PCM audio over the project's
 OpenAI-Realtime-compatible WebSocket protocol. An in-repo Hugging Face backend
 adapter reuses `ConvFillSystem`; it does not send STT output directly to Claude.
 
-## Speech demo environment
+## API keys
 
-Create the dedicated `hf-demo` Conda environment from the checked-in definition.
-This keeps the speech package's Torch, Transformers, MLX, and audio pins separate
-from the `convfill` training environment:
-
-```bash
-conda env create -f web_demo/environment.yml
-conda activate hf-demo
-npm ci --prefix web_demo/hf_interface
-```
-
-After the YAML changes, update the existing environment with:
+The launcher requires `ANTHROPIC_API_KEY` in the environment. No key is stored
+in the repository. Export it in the shell you launch from, ideally using a
+secure method such as those in OpenAI's
+[API key safety guidance](https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safety):
 
 ```bash
-conda env update -n hf-demo -f web_demo/environment.yml --prune
+export ANTHROPIC_API_KEY="your-anthropic-api-key"
 ```
 
-The first launch downloads the selected local STT and TTS models from the
-Hugging Face Hub. On Apple Silicon, the package automatically selects its MLX
-implementations. See the upstream
-[installation notes](https://github.com/huggingface/speech-to-speech#installation)
-for Linux/CUDA-specific Qwen3-TTS wheels.
-
-## API key
-
-The launcher requires `ANTHROPIC_API_KEY` in the environment. It never reads
-`~/.secret` and no key is stored in the repository. If `~/.secret` is a
-shell-compatible file that exports the key, load it manually before starting:
-
-```bash
-conda activate hf-demo
-source ~/.secret
-test -n "$ANTHROPIC_API_KEY"
-```
-
-Alternatively, export `ANTHROPIC_API_KEY` directly in the current shell.
+`rag` mode additionally needs `OPENAI_API_KEY` (query embeddings), and a Gemini
+`Reasoner` needs `GEMINI_API_KEY`.
 
 ## Starting the demo
 
 ```bash
-conda activate hf-demo
 bash scripts/run_web_demo.sh
 ```
+
+The launcher uses `.venv` automatically. It also honors an already activated
+virtual environment, or an explicit interpreter in `PYTHON_BIN`.
 
 Open `http://127.0.0.1:7860` in Chrome or Edge, click the orb, and allow
 microphone access. The launcher binds both services to loopback only and stops
@@ -147,72 +149,11 @@ bash scripts/run_web_demo.sh
 The interface source and its Apache-2.0 attribution are documented in
 `web_demo/hf_interface/UPSTREAM.md`.
 
-# Training a `Talker` Model
+# Details for Developers or Tinkerers
 
-## Prepare the dataset
-`dataset_gen/dataset_preprocess.py` converts a folder of raw conversations (from the synthetic data pipeline) into the single formatted JSONL file used to train the `Talker` models — the same format as the examples in `data`.
+## Available `Talker` Models
 
-It reads **every file** in `--base_data_dir`, where each file is JSONL and each line is one conversation of the form `{"conversation": [turn, turn, ...]}`. Each turn holds the user message plus *lists* of paired thought/response phrases (the keys are configurable via the `--*_tag` flags). The script validates each turn (it skips conversations with missing fields, empty turns, or mismatched thought/response list lengths), unrolls every turn into its sequence of streaming phrases, and appends the formatted turns to a single output JSONL.
-
-The easiest way to run it is the wrapper script `scripts/data_preprocess.sh`, which invokes `dataset_preprocess.py` with our standard arguments. Edit the input/output paths in that script to point at your own data, then run it from inside `scripts/` (its paths are relative):
-
-```bash
-cd scripts
-bash data_preprocess.sh
-```
-
-The script is just the following call — set `--base_data_dir` to your folder of raw JSONL files and `--output_path` to where you want the formatted dataset:
-
-```bash
-python3 ../dataset_gen/dataset_preprocess.py \
-  --user_tag user \
-  --thoughts_tag thoughts \
-  --responder_tag response \
-  --base_data_dir <your raw data folder> \
-  --output_path <your output .jsonl> \
-  --include_history
-```
-
-Arguments:
-
-| Flag | Meaning |
-|------|---------|
-| `--base_data_dir` | Folder whose files (each JSONL) are all read as input |
-| `--output_path` | Output JSONL path (created/overwritten, then appended to) |
-| `--user_tag` | Per-turn key holding the user message (we use `user`) |
-| `--thoughts_tag` | Per-turn key holding the list of thought phrases (we use `thoughts`) |
-| `--responder_tag` | Per-turn key holding the list of response phrases (we use `response`) |
-| `--include_history` | When set, each phrase also carries the running text of the turn's previous responses |
-
-## Model Fine-Tuning
-
-`src/training/finetune_convfill.py` finetunes a HuggingFace model for the ConvFill task using a config from `configs/convfill_frontend_configs`. Run from the repo root:
-
-```bash
-python src/training/finetune_convfill.py \
-  --config configs/convfill_frontend_configs/convfill_gemma3IT_270M_nd.json \
-  --run_name my_experiment \
-  --output_dir ./runs
-```
-
-| Flag | Required | Default | Meaning |
-|------|----------|---------|---------|
-| `--config` | yes | — | Path to a `Talker` training config JSON |
-| `--run_name` | yes | — | Name for this run (used for logging/checkpoints) |
-| `--output_dir` | no | `./runs` | Base directory for outputs |
-| `--resume_from_scratch` | no | off | Ignore `latest.ckpt` and start fresh |
-
-The easiest way to run it is the wrapper script `scripts/train_convfill.sh`:
-
-```bash
-bash scripts/train_convfill.sh
-```
-
-Multi-GPU training is handled automatically through Lightning's DDP when multiple GPUs are available, they will be auto-detected in the current configuration; CPU vs GPU is set by the `"platform"` field in the config.
-
-## Supported Local Models
-
-These are the configs in `configs/convfill_frontend_configs`, each pointing at a HuggingFace model. Pass one to `--config` when training, or reference it from `configs/demo_mode/convfill_overall_config.json` under the top-level `frontend_model_config_path` for inference.
+These are the configs in `configs/convfill_frontend_configs`, each pointing at a released fine-tuned `Talker` and the HuggingFace base model it was trained from. Reference one from the top-level `frontend_model_config_path` in `configs/demo_mode/*.json` to select the `Talker` the demo runs.
 
 | Config | HuggingFace model |
 |--------|-------------------|
@@ -224,20 +165,7 @@ These are the configs in `configs/convfill_frontend_configs`, each pointing at a
 | `convfill_llama3.2IT_1B_nd.json` | `meta-llama/Llama-3.2-1B-Instruct` |
 | `convfill_qwen3_0.6B_nd.json` | `Qwen/Qwen3-0.6B` |
 
-These are the models we have tested as ConvFill `Talker`s, but they are not the only options — you can train any compatible HuggingFace model as a `Talker` using our training scripts and dataset (see [Training a `Talker` Model](#training-a-talker-model)).
-
-# Details for Developers or Tinkerers
-
-## Training Code Structure
-
-* `configs` contains the model training and inference configurations for ConvFill `Talker` models
-* `data` contains clean JSONL training data that is already formatted and can be used to train the `Talker` models
-* `dataset` contains the torch Dataset and Collators used in `Talker` model training
-* `dataset_gen` contains the data preprocessing script needed to take a folder of raw JSONL data generated by our synthetic data pipeline and convert it to a format like the example in `data`. You can use this to preprocess your own custom dataset
-* `src/training` contains files to train the `Talker` models
-* `src/training/convfill_pl_module.py` contains the code for a Lightning Module that is used to structure training and validation steps
-* `src/training/finetune_convfill.py` contains the code to finetune an existing model for the ConvFill task. It supports logging through WandB and accepts configuration files of the form in `configs`. It has been tested for multi-GPU training and integrates DDP through Lightning's trainer.
-* `src/training/metrics.py` contains metrics for logging. You can use this file to add your own scalar metric logging.
+These are the models we have tested as ConvFill `Talker`s.
 
 ## Inference Code Structure
 
@@ -252,7 +180,7 @@ These are the models we have tested as ConvFill `Talker`s, but they are not the 
 
 ## Configs
 
-* `configs/convfill_frontend_configs` — `Talker` (local) model training/inference configs, one per model size (see the table below).
+* `configs/convfill_frontend_configs` — `Talker` (local) model inference configs, one per model size (see the table above).
 * `configs/demo_mode` — runtime configs consumed by both the ConvFill engine and the Hugging Face realtime adapter. They select the Talker, Reasoner, prompt, and task mode.
 * `configs/backend_model_configs` — available cloud `Reasoner` model names per provider (`claude/`, `openai/`, `gemini/`).
 * `configs/convfill_backend_prompts` — `Reasoner` prompt templates for the ConvFill stack (the `*_conv.txt` files).
@@ -260,7 +188,7 @@ These are the models we have tested as ConvFill `Talker`s, but they are not the 
 
 ### Adding New Model(s)
 
-Each `Talker` config file (e.g., `convfill_gemma3IT_270M_nd.json`) specifies the model, training hyperparameters, and inference weight paths. Model parameters for training and inference can be adjusted by editing these files. To add a new model, copy one of the existing configs and update the metadata to match the new model. 
+Each `Talker` config file (e.g., `convfill_gemma3IT_270M_nd.json`) specifies the model and its inference weight paths. Model parameters for inference can be adjusted by editing these files. To add a new model, copy one of the existing configs and update the metadata to match the new model. 
 
 The key fields for inference are:
 
@@ -272,6 +200,58 @@ The key fields for inference are:
 | `convfill_hf_mlx_pretrained_path` | HuggingFace model ID or local path to ConvFill-trained weights for MLX backend (int8 quantized) |
 
 The weight paths can be either HuggingFace model IDs (e.g., `"vysri/gemma3-270m-IT-ConvFill"`) or local filesystem paths (e.g., `"/path/to/local/weights"`).
+
+## Advanced Demo Setup
+
+The default `normal` task mode needs no extra setup. Select another mode with
+`CONVFILL_MODE=rag` or `CONVFILL_MODE=mcp` when launching, together with
+`CONVFILL_CONFIG=configs/demo_mode/convfill_full_config.json`.
+
+### RAG mode
+
+RAG mode retrieves context from a vector index before each `Reasoner` response.
+Install the `rag` extra and export `OPENAI_API_KEY`, since queries are embedded
+with OpenAI's `text-embedding-3-large` even when the `Reasoner` is Claude. The
+retrieval assets are committed under `src/inference/rag/` (`uw_phd.index` and
+`uw_chunks.json`), and the local reranker downloads on first use.
+
+### MCP mode
+
+MCP mode lets the `Reasoner` call tools exposed by external
+[Model Context Protocol](https://modelcontextprotocol.io) servers. Install the
+`mcp` extra, run the servers yourself, and list them under
+`modes.mcp.task_specific_config.mcp_servers` in the full config. The checked-in
+example launches the [`mail-mcp`](https://github.com/tecnologicachile/mail-mcp)
+server through Docker:
+
+```json
+"mcp_servers": [
+  {
+    "name": "mail",
+    "transport": "stdio",
+    "command": "docker",
+    "args": ["exec", "-i", "gmail-mcp", "mail-mcp"],
+    "env": {}
+  }
+]
+```
+
+`max_tool_iterations` caps how many tool calls the `Reasoner` may chain per turn.
+
+### Customizing the `Reasoner`
+
+Set `backend_model_name` and `backend_model_mode` at the top level of the demo
+config. Available names per provider live in
+`configs/backend_model_configs/<provider>/model_names.json`:
+
+| Provider (`backend_model_mode`) | Model names |
+|---------------------------------|-------------|
+| `claude` | `claude-haiku-4-5-20251001`, `claude-opus-4-7`, `claude-sonnet-4-6` |
+| `openai` | `gpt-4o`, `gpt-4-turbo`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt5.4-nano` |
+| `gemini` | `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-3-flash-preview`, `gemini-3.1-flash-lite-preview`, `gemini-3.1-pro-preview` |
+
+Gemini requires the `gemini` extra and `GEMINI_API_KEY`; OpenAI requires
+`OPENAI_API_KEY`.
 
 ## Realtime ConvFill Adapter
 
