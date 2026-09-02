@@ -21,6 +21,12 @@ dependencies = [
 rag = ["faiss-cpu", "sentence-transformers"]
 mcp = ["mcp"]
 gemini = ["google-generativeai"]
+faster-whisper = [
+    "speech-to-speech[faster-whisper] @ git+https://github.com/huggingface/speech-to-speech.git@b21e54d6a845c54308bc62500b57f9a2b2aa93ac",
+]
+pocket = [
+    "speech-to-speech[pocket] @ git+https://github.com/huggingface/speech-to-speech.git@b21e54d6a845c54308bc62500b57f9a2b2aa93ac",
+]
 dev = ["pytest==9.0.2", "httpx"]
 
 [tool.setuptools.packages.find]
