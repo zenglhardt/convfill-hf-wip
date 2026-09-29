@@ -11,7 +11,7 @@ UI_PORT="${UI_PORT:-7860}"
 HF_S2S_STT="${HF_S2S_STT:-faster-whisper}"
 HF_S2S_TTS="${HF_S2S_TTS:-pocket}"
 CONVFILL_CONFIG="${CONVFILL_CONFIG:-configs/demo_mode/convfill_simple_config.json}"
-CONVFILL_MODE="${CONVFILL_MODE:-normal}"
+CONVFILL_MODE="${CONVFILL_MODE:-web_search}"
 
 cd "$REPO_ROOT"
 

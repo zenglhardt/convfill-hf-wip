@@ -86,7 +86,7 @@ It resolves the interpreter from `PYTHON_BIN`, then an activated `VIRTUAL_ENV`, 
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `CONVFILL_CONFIG` | `configs/demo_mode/convfill_simple_config.json` | Demo config passed to `ConvFillConfig`. |
-| `CONVFILL_MODE` | `normal` | Task mode: `normal`, `rag`, `mcp`, or `web_search`. |
+| `CONVFILL_MODE` | `web_search` | Task mode: `normal`, `rag`, `mcp`, or `web_search`. |
 | `HF_S2S_STT` | `faster-whisper` (temporary; target is `parakeet-tdt`) | Speech recognition stage. |
 | `HF_S2S_TTS` | `pocket` (temporary; target is `qwen3`) | Speech synthesis stage. |
 | `S2S_PORT` | `8765` | Realtime WebSocket port. |
