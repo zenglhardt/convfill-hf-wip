@@ -150,6 +150,13 @@ Do not break these without understanding why they exist.
   thought is queued, no Talker inference is in flight, and no audio is in flight. Removing any of the
   three probes makes the agent talk over itself or go silent. The ledger only overrides `get`, so
   Hugging Face's barge-in flushes of `q.queue` under `q.mutex` still work.
+- **Web search latency is covered by the Talker, not special-cased.** In `web_search` mode,
+  `ClaudeInference.generate_with_web_search` streams sentences while Anthropic runs the search
+  server-side; the gap is filled through the normal `<sil>` path. Its `search` and `search_error`
+  events are only logged in `ConvFillBackend.backend_infer_web_search` and must never be yielded
+  as thoughts. Text written before a search is flushed as its own sentence so it does not run into
+  the answer that follows. Keep the stream inside a `with` block so closing the generator on
+  cancel still aborts the HTTP request.
 - **Backend registration order.** `register_convfill_backend()` in `web_demo/hf_convfill/backend.py`
   must run before `speech_to_speech.s2s_pipeline` is imported, because Hugging Face builds its
   argument dataclasses from the registry at import time. `server.py` enforces this ordering; keep

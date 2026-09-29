@@ -100,7 +100,9 @@ audio pipeline:
 
 1. Silero VAD detects turns.
 2. Parakeet TDT transcribes speech locally.
-3. Claude Haiku streams concise knowledge as the background `Reasoner`.
+3. Claude Haiku streams concise knowledge as the background `Reasoner`. By
+   default it can search the web (through Anthropic's server-side search tool)
+   when a question needs current information, such as a recent game score.
 4. The local, fine-tuned ConvFill `Talker` turns each knowledge update (or a
    `<sil>` filler signal) into the phrase the user actually hears.
 5. Qwen3-TTS synthesizes and streams each Talker phrase locally.
@@ -123,6 +125,10 @@ export ANTHROPIC_API_KEY="your-anthropic-api-key"
 `rag` mode additionally needs `OPENAI_API_KEY` (query embeddings), and a Gemini
 `Reasoner` needs `GEMINI_API_KEY`.
 
+The default `web_search` mode needs no extra key, but web search must be enabled
+for your Anthropic organization in the Console, and each search is billed on
+top of tokens. See [Web search mode](#web-search-mode).
+
 ## Starting the demo
 
 ```bash
@@ -136,7 +142,8 @@ Open `http://127.0.0.1:7860` in Chrome or Edge, click the orb, and allow
 microphone access. The launcher binds both services to loopback only and stops
 them together on Ctrl+C.
 
-Defaults can be overridden without editing code:
+The launcher runs in `web_search` mode by default. Defaults can be overridden
+without editing code:
 
 ```bash
 CONVFILL_CONFIG=configs/demo_mode/convfill_simple_config.json \
@@ -145,6 +152,8 @@ HF_S2S_STT=parakeet-tdt \
 HF_S2S_TTS=qwen3 \
 bash scripts/run_web_demo.sh
 ```
+
+`CONVFILL_MODE=normal` turns web search off.
 
 The interface source and its Apache-2.0 attribution are documented in
 `web_demo/hf_interface/UPSTREAM.md`.
@@ -171,7 +180,8 @@ These are the models we have tested as ConvFill `Talker`s.
 
 * `src/inference/convfill_stack` contains the full ConvFill stack — the small local ```Talker``` model running alongside a large ```Reasoner``` model.
 * `src/inference/convfill_stack/run_convfill.py` defines the original system configuration and core classes (`ConvFillConfig`, `ConvFillSystem`).
-* `src/inference/convfill_stack/convfill_backend_multi.py` drives the `Reasoner` across the `normal`, `rag`, and `mcp` task modes.
+* `src/inference/convfill_stack/convfill_backend_multi.py` drives the `Reasoner` across the `normal`, `rag`, `mcp`, and `web_search` task modes.
+* `src/inference/convfill_stack/model_inference_functions_conversational.py` holds the per-provider `Reasoner` calls, including `ClaudeInference.generate_with_web_search`, which streams answer sentences while Anthropic runs the search.
 * `src/inference/shared` contains components shared across stacks — the conversation engine (`convfill_engine.py`), dialogue/turn state managers, and the MCP client (`mcp_client.py`).
 * `src/inference/single_model_stack` contains library code for running a single model on its own — `large_model_only/` (cloud `Reasoner`) and `small_model_only/` (local `Talker`). These are used by the engine; they are not run directly.
 * `src/inference/rag` contains the retrieval module (`retreive.py`, exposing `RunRAG`) plus the committed FAISS index (`uw_phd.index`) and chunk store (`uw_chunks.json`) used in `rag` task mode.
@@ -183,7 +193,7 @@ These are the models we have tested as ConvFill `Talker`s.
 * `configs/convfill_frontend_configs` — `Talker` (local) model inference configs, one per model size (see the table above).
 * `configs/demo_mode` — runtime configs consumed by both the ConvFill engine and the Hugging Face realtime adapter. They select the Talker, Reasoner, prompt, and task mode.
 * `configs/backend_model_configs` — available cloud `Reasoner` model names per provider (`claude/`, `openai/`, `gemini/`).
-* `configs/convfill_backend_prompts` — `Reasoner` prompt templates for the ConvFill stack (the `*_conv.txt` files).
+* `configs/convfill_backend_prompts` — `Reasoner` prompt templates for the ConvFill stack (the `*_conv.txt` files), one per task mode. `convfill_backend_template_web_search_conv.txt` is the web search one.
 * `configs/backend_only_prompts` — prompt templates for `Reasoner`-only single-model runs.
 
 ### Adding New Model(s)
@@ -203,9 +213,57 @@ The weight paths can be either HuggingFace model IDs (e.g., `"vysri/gemma3-270m-
 
 ## Advanced Demo Setup
 
-The default `normal` task mode needs no extra setup. Select another mode with
-`CONVFILL_MODE=rag` or `CONVFILL_MODE=mcp` when launching, together with
+The launcher defaults to the `web_search` task mode. Both demo configs define
+`normal` and `web_search`, which need no extra setup. Select `rag` or `mcp`
+with `CONVFILL_MODE=rag` or `CONVFILL_MODE=mcp`, together with
 `CONVFILL_CONFIG=configs/demo_mode/convfill_full_config.json`.
+
+### Web search mode
+
+In `web_search` mode the Claude `Reasoner` gets Anthropic's server-side
+[web search tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool).
+The search runs on Anthropic's servers inside the same API request, so there is
+no tool loop on our side:
+
+* Answer sentences stream to the `Talker` as soon as each one is complete.
+* While a search is running, no knowledge arrives, so the usual `<sil>`
+  scheduling has the `Talker` fill the gap ("let me check that...").
+* Search queries are logged as `[web_search] query: ...` on the speech server
+  and are never spoken. Failed searches are logged as `[web_search] search failed: ...`.
+* If Anthropic pauses a long search (`pause_turn`), the request is resumed up to
+  `max_continuations` times.
+* Barge-in aborts the stream as in every other mode.
+
+With Claude Haiku 4.5 and the basic tool, a live check searched in about 1.2 s
+and produced its first sentence in about 2.8 s.
+
+Settings live under `modes.web_search.task_specific_config` in both demo
+configs:
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `tool_type` | `web_search_20250305` | Tool version. The basic version is the fastest and the only one Haiku supports. `web_search_20260209` (dynamic filtering) needs a newer Opus or Sonnet and is slower. |
+| `max_uses` | `3` | Maximum searches per turn. |
+| `max_continuations` | `2` | Maximum `pause_turn` resumptions per turn. |
+| `user_location` | Seattle, WA, US (`America/Los_Angeles`) in the checked-in configs | Approximate location used to localize results. Omit it for unlocalized search. |
+
+The prompt template
+(`configs/convfill_backend_prompts/convfill_backend_template_web_search_conv.txt`)
+injects today's date, taken from the speech server's local clock, so relative
+dates like "last night" resolve correctly. It tells the `Reasoner` to search for
+anything time-sensitive (scores, schedules, news, prices, weather), not to
+announce that it is searching, and to state results as short facts that can be
+read aloud.
+
+If the agent asks what today's date is or answers a current-events question from
+memory, it is running in `normal` mode. Check `CONVFILL_MODE` and look for the
+`[web_search]` lines in the speech server log.
+
+Current limits:
+
+* The mode requires a Claude `Reasoner`; other providers raise a `ValueError`.
+* The browser UI's Tools → Web search switch (backed by Serper and
+  `SERPER_API_KEY`) is separate and does not control this mode.
 
 ### RAG mode
 
