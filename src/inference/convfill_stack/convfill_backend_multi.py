@@ -1,4 +1,5 @@
 import torch
+import datetime
 import json
 import re
 import string
@@ -11,8 +12,8 @@ class ConvFillBackend:
                  task_specific_config=None, on_rag_context=None, on_mcp_context=None):
         self.dialogue_state_manager = dialogue_state_manager
         self.model_backend = model_backend
-        # Mode can be one of "normal", "rag", or "mcp"
-        assert mode in ["normal", "rag", "mcp"], f"Unsupported mode: {mode}"
+        # Mode can be one of "normal", "rag", "mcp", or "web_search"
+        assert mode in ["normal", "rag", "mcp", "web_search"], f"Unsupported mode: {mode}"
         self.mode = mode
         self.prompt_template_path = prompt_template_path
         self.on_rag_context = on_rag_context
@@ -36,6 +37,19 @@ class ConvFillBackend:
             self.mcp_hub = MCPToolHub(server_specs)
             self.mcp_tools = self.mcp_hub.list_tools()
             print(f"[mcp] {len(self.mcp_tools)} tools available across {len(server_specs)} servers", flush=True)
+        elif self.mode == "web_search":
+            # Anthropic's server-side web search. The basic tool version is the
+            # low-latency choice and the only one Haiku supports; the dynamic
+            # filtering version (web_search_20260209) needs a newer Opus/Sonnet.
+            search_config = task_specific_config or {}
+            self.web_search_tool = {
+                "type": search_config.get("tool_type", "web_search_20250305"),
+                "name": "web_search",
+                "max_uses": int(search_config.get("max_uses", 3)),
+            }
+            if search_config.get("user_location"):
+                self.web_search_tool["user_location"] = search_config["user_location"]
+            self.max_continuations = int(search_config.get("max_continuations", 2))
 
     def emit_silence_token(self):
         yield "<sil>"
@@ -65,6 +79,15 @@ class ConvFillBackend:
         env, template_file = self.load_prompt_env()
         template = env.get_template(template_file)
         return template.render({"conversation": transcript})
+
+    def build_prompt_web_search(self, transcript, today=None):
+        env, template_file = self.load_prompt_env()
+        template = env.get_template(template_file)
+        today = today or datetime.date.today()
+        return template.render({
+            "conversation": transcript,
+            "current_date": f"{today:%A, %B} {today.day}, {today.year}",
+        })
 
     def backend_infer_simple(self):
         prompt = self.build_prompt_simple(
@@ -106,6 +129,22 @@ class ConvFillBackend:
             elif kind == "sentence":
                 yield payload
 
+    def backend_infer_web_search(self):
+        transcript = self.dialogue_state_manager.get_transcript()
+        prompt = self.build_prompt_web_search(transcript)
+        events = self.model_backend.infer_with_web_search(
+            prompt,
+            web_search_tool=self.web_search_tool,
+            max_continuations=self.max_continuations,
+        )
+        for kind, payload in events:
+            if kind == "search":
+                print(f"[web_search] query: {payload}", flush=True)
+            elif kind == "search_error":
+                print(f"[web_search] search failed: {payload}", flush=True)
+            elif kind == "sentence":
+                yield payload
+
     def backend_infer(self):
         if self.mode == "normal":
             yield from self.backend_infer_simple()
@@ -113,3 +152,5 @@ class ConvFillBackend:
             yield from self.backend_infer_rag()
         elif self.mode == "mcp":
             yield from self.backend_infer_mcp()
+        elif self.mode == "web_search":
+            yield from self.backend_infer_web_search()

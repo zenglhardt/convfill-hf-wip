@@ -130,6 +130,16 @@ class BackendInference:
         else:
             raise ValueError(f"Unsupported model mode for tool use: {self.model_mode}")
 
+    def infer_with_web_search(self, prompt, web_search_tool, max_continuations=2):
+        """Inference with Anthropic's server-side web search tool (Claude only).
+
+        Yields ("search", query), ("search_error", code) and ("sentence", str).
+        """
+        if self.model_mode != "claude":
+            raise ValueError(f"Web search mode requires a Claude Reasoner, not {self.model_mode!r}")
+        claude = ClaudeInference(self.api_key, self.model_name, reasoning_effort=self.reasoning_effort)
+        yield from claude.generate_with_web_search(prompt, web_search_tool, max_continuations=max_continuations)
+
 
 class GeminiInference:
     def __init__(self, api_key, model_name="gemini-2.5-flash-lite-preview-09-2025"):
@@ -427,6 +437,66 @@ class ClaudeInference:
             return
 
         yield ("sentence", "I was unable to finish using my tools.")
+
+    def generate_with_web_search(self, prompt, web_search_tool, max_continuations=2, max_tokens=1024):
+        """Stream answer sentences while Claude runs Anthropic's server-side web search.
+
+        The search executes on Anthropic's servers inside the same request, so
+        there is no client tool loop. Sentences stream as soon as they complete,
+        which lets the Talker fill the silence while a search is running.
+
+        Yields:
+            ("search", str)        query Claude issued
+            ("search_error", str)  error code when a search failed
+            ("sentence", str)      answer sentences
+        """
+        messages = [{"role": "user", "content": prompt}]
+        thinking_kwargs, thinking_max_tokens = _claude_thinking_kwargs(self.model_name, self.reasoning_effort)
+        if thinking_max_tokens is not None:
+            max_tokens = max(max_tokens, thinking_max_tokens)
+
+        for _ in range(max_continuations + 1):
+            parser = ConversationalStreamParser()
+            _llm_send("claude", self.model_name, {
+                "max_tokens": max_tokens,
+                "tools": [web_search_tool],
+                "messages": messages,
+                **thinking_kwargs,
+            })
+            with self.client.messages.stream(
+                model=self.model_name,
+                max_tokens=max_tokens,
+                tools=[web_search_tool],
+                messages=messages,
+                **thinking_kwargs,
+            ) as stream:
+                for event in stream:
+                    if event.type == "text":
+                        for sentence in parser.feed(event.text):
+                            yield ("sentence", sentence)
+                    elif event.type == "content_block_stop":
+                        block = event.content_block
+                        if block.type == "server_tool_use":
+                            # Text written before a search must not run into the
+                            # answer that follows it.
+                            for sentence in parser.flush():
+                                yield ("sentence", sentence)
+                            yield ("search", (block.input or {}).get("query", ""))
+                        elif block.type == "web_search_tool_result" and not isinstance(block.content, list):
+                            # Search failures arrive as a result block, not an exception.
+                            yield ("search_error", getattr(block.content, "error_code", "unknown"))
+                response = stream.get_final_message()
+
+            for sentence in parser.flush():
+                yield ("sentence", sentence)
+            if response.stop_reason != "pause_turn":
+                return
+            # The server-side search loop hit its iteration cap. Resending the
+            # paused assistant turn resumes it; no extra user message is needed.
+            messages = [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": response.content},
+            ]
 
 
 class OpenAIInference:

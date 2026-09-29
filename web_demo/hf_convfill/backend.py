@@ -20,7 +20,7 @@ class ConvFillHandlerArguments:
     )
     convfill_mode: str = field(
         default="normal",
-        metadata={"help": "ConvFill task mode to run (normal, rag, or mcp)."},
+        metadata={"help": "ConvFill task mode to run (normal, rag, mcp, or web_search)."},
     )
 
 

@@ -86,7 +86,7 @@ It resolves the interpreter from `PYTHON_BIN`, then an activated `VIRTUAL_ENV`, 
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `CONVFILL_CONFIG` | `configs/demo_mode/convfill_simple_config.json` | Demo config passed to `ConvFillConfig`. |
-| `CONVFILL_MODE` | `normal` | Task mode: `normal`, `rag`, or `mcp`. |
+| `CONVFILL_MODE` | `normal` | Task mode: `normal`, `rag`, `mcp`, or `web_search`. |
 | `HF_S2S_STT` | `faster-whisper` (temporary; target is `parakeet-tdt`) | Speech recognition stage. |
 | `HF_S2S_TTS` | `pocket` (temporary; target is `qwen3`) | Speech synthesis stage. |
 | `S2S_PORT` | `8765` | Realtime WebSocket port. |
@@ -97,7 +97,8 @@ It resolves the interpreter from `PYTHON_BIN`, then an activated `VIRTUAL_ENV`, 
 | `STARTUP_GREETING` | empty | Greeting published to the UI via `/api/config`. |
 
 `rag` mode additionally needs `OPENAI_API_KEY` (query embeddings); a Gemini Reasoner needs
-`GEMINI_API_KEY`.
+`GEMINI_API_KEY`. `web_search` mode needs a Claude Reasoner and web search enabled for the
+Anthropic organization; it uses no extra key.
 
 ## Tests
 
@@ -106,16 +107,16 @@ It resolves the interpreter from `PYTHON_BIN`, then an activated `VIRTUAL_ENV`, 
 npm test --prefix web_demo/hf_interface
 ```
 
-Pytest `testpaths` is limited to `web_demo/hf_convfill` and `web_demo/hf_interface`: 28 tests, no
-network, driven by a fake ConvFill system. The JS suite has 1 test. The legacy
+Pytest `testpaths` is limited to `web_demo/hf_convfill` and `web_demo/hf_interface`: 37 tests, no
+network, driven by a fake ConvFill system and a fake Anthropic stream. The JS suite has 1 test. The legacy
 `web_demo/backend/test_tts_markdown.py` is intentionally outside `testpaths` and must stay excluded.
 Run both suites before declaring work finished.
 
 ## Configuration
 
 - `configs/demo_mode/*.json` are the runtime configs read by both the engine and the realtime
-  adapter. `convfill_simple_config.json` defines only the `normal` mode; `convfill_full_config.json`
-  adds `rag` and `mcp`. Both default the Reasoner to `claude-haiku-4-5-20251001`.
+  adapter. `convfill_simple_config.json` defines the `normal` and `web_search` modes;
+  `convfill_full_config.json` adds `rag` and `mcp`. Both default the Reasoner to `claude-haiku-4-5-20251001`.
 - Top-level keys: `frontend_model_config_path` (which Talker to load), `backend_model_name`,
   `backend_model_mode` (`claude`, `openai`, `gemini`), `num_history_turns`, `tts_mode`. Per-mode
   keys live under `modes.<mode>` and are merged over the top level by `ConvFillConfig`.
@@ -127,7 +128,9 @@ Run both suites before declaring work finished.
   provider. `configs/convfill_backend_prompts/` holds the ConvFill Reasoner prompt templates;
   `configs/backend_only_prompts/` holds the Reasoner-only ones.
 - `rag` mode config points at `src/inference/rag/uw_phd.index` and `uw_chunks.json`; `mcp` mode
-  lists servers under `modes.mcp.task_specific_config.mcp_servers` with `max_tool_iterations`.
+  lists servers under `modes.mcp.task_specific_config.mcp_servers` with `max_tool_iterations`; `web_search` mode takes `tool_type`, `max_uses`,
+  `max_continuations`, and an optional `user_location` under
+  `modes.web_search.task_specific_config`.
 - Note the legacy naming: `frontend` means Talker, `backend` means Reasoner.
 
 ## Architecture notes and invariants

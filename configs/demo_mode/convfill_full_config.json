@@ -31,6 +31,21 @@
                 ],
                 "max_tool_iterations": 4
             }
+        },
+        "web_search": {
+            "backend_prompt_template_file": "configs/convfill_backend_prompts/convfill_backend_template_web_search_conv.txt",
+            "task_specific_config": {
+                "tool_type": "web_search_20250305",
+                "max_uses": 3,
+                "max_continuations": 2,
+                "user_location": {
+                    "type": "approximate",
+                    "city": "Seattle",
+                    "region": "Washington",
+                    "country": "US",
+                    "timezone": "America/Los_Angeles"
+                }
+            }
         }
     }
 }
