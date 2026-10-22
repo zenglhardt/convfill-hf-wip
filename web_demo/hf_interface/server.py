@@ -114,7 +114,10 @@ async def realtime(socket: WebSocket):
     _session_active = True
     tasks = []
     try:
-        await socket.accept()
+        # Browsers require a selected protocol when the SDK offers protocols.
+        # Python WS clients allow a missing selection, hiding this mismatch.
+        protocols = socket.scope.get("subprotocols", [])
+        await socket.accept(subprotocol="realtime" if "realtime" in protocols else None)
         async with websockets.connect(PIPELINE_URL, open_timeout=10, max_size=8 * 1024 * 1024) as backend:
             async def upstream():
                 while True:

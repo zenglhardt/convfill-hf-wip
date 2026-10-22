@@ -81,7 +81,8 @@ def test_websocket_admission_forwarding_and_reconnect(monkeypatch):
 
     monkeypatch.setattr(server.websockets, "connect", connect)
     with TestClient(server.app) as live:
-        with live.websocket_connect("/v1/realtime") as first:
+        with live.websocket_connect("/v1/realtime", subprotocols=["realtime", "openai-insecure-api-key.s2s-local", "openai-agents-sdk.0.14.3"]) as first:
+            assert first.accepted_subprotocol == "realtime"
             first.send_text("first-session")
             assert first.receive_text() == "first-session"
             with pytest.raises(WebSocketDisconnect) as rejected:

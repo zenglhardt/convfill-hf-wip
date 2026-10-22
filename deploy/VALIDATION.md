@@ -102,7 +102,7 @@ synthetic test material.
 
 ## Private Space startup regression
 
-A real browser startup failed with `[object Event]` because the WebSocket URL
+A real browser startup failed with `[object Event]`. The WebSocket URL
 did not carry the private embedding page's temporary `__sign` grant. API tests
 with an Authorization header had hidden this browser-specific difference.
 A live reproduction returned HTTP 404 without the page grant; the same-origin
@@ -115,3 +115,18 @@ keys remain server-side and WebSocket logs redact access grants. Reproduce the
 browser authentication check with `PYTHONPATH=. .venv/bin/python
 scripts/validate_browser_access.py`; the script also verifies the deployed
 browser module matches the local source.
+
+The user still encountered a connection error after that change. Inspection of
+their Chrome session confirmed the signed URL and SDK protocols were present.
+The gateway accepted without selecting `realtime`, which the browser handshake
+requires when protocols are offered. Python's WebSocket client allowed the
+missing selection, so the earlier protocol check was insufficient. The gateway
+now selects `realtime`; local and deployed checks explicitly assert this selection
+with all three SDK protocol offers. Required suites pass: 49 Python, 5 JavaScript.
+
+After deploying Space revision `53bfc1b2dabff78d084190025801860883c9c53e`,
+the live check negotiated `realtime` and received both session events. The user's
+existing Chrome tab then started a session with real microphone capture and
+Mute/End controls, with no startup error. Server logs confirmed SDK session
+configuration. The test session was ended; this verifies browser startup, not
+spoken-answer quality or physical playback.

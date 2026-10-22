@@ -28,7 +28,8 @@ async def main():
     for attempt in range(3):
         try:
             async with websockets.connect(generated, origin='https://' + host,
-                subprotocols=['realtime', 'openai-insecure-api-key.s2s-local'], open_timeout=10, ping_interval=None) as socket:
+                subprotocols=['realtime', 'openai-insecure-api-key.s2s-local', 'openai-agents-sdk.0.14.3'], open_timeout=10, ping_interval=None) as socket:
+                assert socket.subprotocol == 'realtime', 'Browser handshake requires realtime subprotocol selection'
                 assert json.loads(await asyncio.wait_for(socket.recv(), 8))['type'] == 'session.created'
                 await socket.send(json.dumps({'type': 'session.update', 'session': {'type': 'realtime', 'tools': []}}))
                 while True:
@@ -48,6 +49,7 @@ async def main():
     expected = (root / 'web_demo/hf_interface/connection-url.js').read_bytes()
     assert hashlib.sha256(deployed).digest() == hashlib.sha256(expected).digest(), 'Deployed browser module differs'
     result = {'space': 'smolagents/convfill-speech-demo', 'browser_origin_and_sdk_protocols': True,
+              'negotiated_subprotocol': 'realtime',
               'socket_authorization_header': False, 'private_page_grant': True,
               'session_created': True, 'session_updated': True, 'deployed_module_matches': True}
     Path('/tmp/convfill-browser-access-validation.json').write_text(json.dumps(result, indent=2) + '\n')

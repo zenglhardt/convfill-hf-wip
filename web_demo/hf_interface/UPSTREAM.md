@@ -30,3 +30,8 @@ iframe cookies. No inference API key is put in the browser. `ui/dom.js`
 normalizes opaque SDK/browser errors, and `server.py` redacts access grants
 from Uvicorn's WebSocket logs. Regression coverage lives in
 `tests/connection.test.mjs` and `test_server.py`.
+
+The proxy also explicitly selects the SDK's `realtime` WebSocket subprotocol.
+Browser handshakes require a selection when protocols are offered; the Python
+WebSocket client permits no selection and previously hid this incompatibility.
+The live access check now asserts the negotiated protocol as well as session events.
