@@ -34,3 +34,7 @@ filtered greeting directly to TTS, with no Talker, fillers, or tools. Its greeti
 prompt is separate from the Reasoner knowledge prompt. Both histories retain the
 reply; ordinary turns continue to speak only the Talker. No text matching is used
 to choose this route, and the same cancellation/deadline controls apply.
+
+The hosted header names “ConvFill's Talker and Gemma 4 Reasoner” above
+“on Hugging Face's speech-to-speech”, with a project-repository link. The
+phone layout keeps both lines visible and places controls on the next row.

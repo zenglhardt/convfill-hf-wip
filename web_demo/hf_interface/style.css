@@ -2781,3 +2781,11 @@ body.cam-on .footer {
   padding-top: 2px;
 }
 .hist-timings .timing-note { font-size: 11px; max-width: 48ch; }
+
+/* The hosted demo keeps its model title and project link visible on phones. */
+@media (max-width: 600px) {
+  .topbar { flex-wrap: wrap; row-gap: 12px; }
+  .brand { flex: 1 1 100%; min-width: 0; }
+  .brand .ident-blurb { display: block; }
+  .topbar-right { margin-left: auto; }
+}
