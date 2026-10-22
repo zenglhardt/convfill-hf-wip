@@ -64,6 +64,15 @@ def main():
             repo_id=repo,
             repo_type="space",
             folder_path=target,
+            delete_patterns=[
+                "src/**",
+                "configs/**",
+                "scripts/**",
+                "deploy/**",
+                "web_demo/**",
+                "pyproject.toml",
+                ".dockerignore",
+            ],
             commit_message="Use managed ConvFill pipelines through the session service",
         )
     print("Frontend Space revision:", commit.oid)
