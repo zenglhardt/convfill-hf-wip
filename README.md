@@ -289,3 +289,19 @@ If you use ConvFill, the dataset, or the released models in your work, please ci
 ```
 
 ConvFill code is released under the MIT License — see [`LICENSE`](LICENSE). The vendored Hugging Face browser interface is Apache-2.0; see [`web_demo/hf_interface/UPSTREAM.md`](web_demo/hf_interface/UPSTREAM.md) and its retained license.
+
+### Hosted multi-session deployment
+
+The hosted Space is a browser UI and session proxy only. Deploy ConvFill in the
+managed CPU pipeline workers behind the approved test load balancer. Each worker
+uses the upstream `convfill_demo.pipeline` entry point with its existing pool size;
+VAD, output holds, cancellation, delivery ledgers, and histories live there. The
+Reasoner, Talker, STT, and TTS remain remote model services. Configure
+`LOAD_BALANCER_URL` and `LB_HF_TOKEN` server-side for `deploy/hf_space.py`; keep the
+existing `SERPER_API_KEY` in the Space. The deployer preserves the private Space.
+
+`scripts/run_web_demo.sh` and `deploy/Dockerfile.single-session` retain the previous
+local development layout. That layout has a one-session gateway and is not used
+for the hosted multi-user deployment. Backend configuration and rollout belong
+in the private infrastructure repository; reusable runtime code is in upstream
+speech-to-speech PR #750.

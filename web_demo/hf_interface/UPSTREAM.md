@@ -52,3 +52,11 @@ Override with `CONVFILL_COMPLETE_HOLD_MS` / `CONVFILL_INCOMPLETE_HOLD_MS`. The
 600 ms incomplete-turn processing delay stays inside the incomplete hold window;
 it is not added afterward. Model generation may overlap these windows, so measured
 residual hold and first-audio latency will vary with inference time.
+
+Hosted architecture: Docker now starts only the shared browser server and session
+proxy. `deploy/frontend/` vendors the unmodified shared server/auth/limiter from
+speech-to-speech PR #750 (core main 44d6010c). The existing local server and launcher
+remain for debugging. The Space allocates sessions through the approved test load
+balancer; ConvFill, VAD, output holds, and per-session histories live in external
+managed CPU workers. Model services remain remote. `deploy/Dockerfile.single-session`
+retains the previous local orchestration layout for development only.
