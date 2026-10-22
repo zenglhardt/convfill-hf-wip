@@ -19,7 +19,7 @@ def test_config_points_at_realtime_server() -> None:
 def test_interface_is_served() -> None:
     response = client.get("/")
     assert response.status_code == 200
-    assert "Hugging Face Realtime" in response.text
+    assert "ConvFill Realtime" in response.text
 
 
 def test_agents_sdk_bundle_is_served() -> None:

@@ -17,3 +17,7 @@ connection-url.js forwards the private Space’s short-lived __sign grant only t
 same-origin HTTPS/WSS. The gateway redacts grants from WebSocket logs and selects
 the realtime subprotocol. Inference and server search credentials stay server-side.
 Tests cover connection, streaming tools, first-audio timing, and UI display.
+
+The hosted index retains its ConvFill branding and actual quantized Gemma, Talker,
+STT and TTS labels, rather than the shared demo’s provider/model credits. Tool
+controls and the updated gear fields remain from the current shared UI.
