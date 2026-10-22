@@ -6,12 +6,12 @@ models, and browser checks. The baseline retains quantized
 
 ## Completed checks
 
-- **48 Python tests pass**, including the existing adapter/delivery tests, raw
+- **49 Python tests pass**, including the existing adapter/delivery tests, raw
   prompt preservation, split stop tokens, empty chunks, buffered final text,
   thought filtering, HTTP/SSE failures, a real loopback stalled socket,
   cancellation, Reasoner/Talker overlap, stuck-worker quarantine, cross-origin
   rejection, single-session admission and clean proxy reconnects.
-- **1 browser adapter JS test passes.** The fake-model and loopback tests do not
+- **5 browser adapter JS tests pass.** The fake-model and loopback tests do not
   claim actual model or browser playback validation.
 - **Actual model inference:** three consecutive turns completed. The Talker
   retained the expected sky-color fact and remembered the synthetic user's
@@ -99,3 +99,19 @@ transcripts are included in the committed results.
 Machine-readable observations are in `validation/models.json`, `gpu.json`,
 `speech.json`, `hosted-speech.json`, `faults.json`, and `bargein.json`. All prompts/audio used by the scripted speech checks were
 synthetic test material.
+
+## Private Space startup regression
+
+A real browser startup failed with `[object Event]` because the WebSocket URL
+did not carry the private embedding page's temporary `__sign` grant. API tests
+with an Authorization header had hidden this browser-specific difference.
+A live reproduction returned HTTP 404 without the page grant; the same-origin
+signed socket accepted the browser Origin and SDK subprotocols and emitted
+`session.created` and `session.updated` without an Authorization header.
+
+`connection-url.js` now carries the page grant only to its own secure WebSocket,
+and the UI turns opaque browser events into an actionable message. Inference
+keys remain server-side and WebSocket logs redact access grants. Reproduce the
+browser authentication check with `PYTHONPATH=. .venv/bin/python
+scripts/validate_browser_access.py`; the script also verifies the deployed
+browser module matches the local source.

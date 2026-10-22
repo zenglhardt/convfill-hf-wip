@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import asyncio
+import re
 from pathlib import Path
 
 import httpx
@@ -30,6 +31,20 @@ SERPER_URL = "https://google.serper.dev/search"
 MAX_RESULTS = 5
 
 logger = logging.getLogger("convfill.speech_demo")
+
+
+class RedactAccessGrants(logging.Filter):
+    """Uvicorn logs WS URLs even when HTTP access logging is disabled."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        cleaned = re.sub(r"([?&](?:__sign|session_token)=)[^&\s\"']+", r"\1<redacted>", message)
+        if cleaned != message:
+            record.msg, record.args = cleaned, ()
+        return True
+
+
+logging.getLogger("uvicorn.error").addFilter(RedactAccessGrants())
 app = FastAPI(title="ConvFill Hugging Face Voice Demo")
 
 

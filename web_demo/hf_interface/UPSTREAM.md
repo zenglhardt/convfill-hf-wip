@@ -22,3 +22,11 @@ the hosted speech-only demo does not request camera access.
 
 `index.html` identifies the hosted quantized Gemma Reasoner and remote speech
 models, and hides the unsupported tool controls.
+
+Private Space connection fix: `connection-url.js` forwards the embedding page's
+short-lived `__sign` grant only to its same-origin HTTPS/WSS connection. This
+supports browsers that cannot authenticate the private Space WebSocket with
+iframe cookies. No inference API key is put in the browser. `ui/dom.js`
+normalizes opaque SDK/browser errors, and `server.py` redacts access grants
+from Uvicorn's WebSocket logs. Regression coverage lives in
+`tests/connection.test.mjs` and `test_server.py`.

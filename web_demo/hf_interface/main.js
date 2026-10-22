@@ -18,7 +18,7 @@
  */
 
 import { S2sRealtimeClient } from "./s2s-realtime-client.js";
-import { $, truncateError, DEBUG } from "./ui/dom.js";
+import { $, truncateError, errorMessage, DEBUG } from "./ui/dom.js";
 import { ChatView } from "./ui/chat.js";
 import { Account } from "./ui/account.js";
 
@@ -1488,7 +1488,7 @@ async function doStart(audioContext = null) {
     // Non-fatal: the backend reported an error mid-session. Log it, keep the
     // socket and the conversation alive (the model can recover on its own).
     const detail = /** @type {CustomEvent<{ error: unknown }>} */ (e).detail;
-    const msg = detail.error instanceof Error ? detail.error.message : String(detail.error);
+    const msg = errorMessage(detail.error);
     console.warn("[main] server error (non-fatal):", msg);
   });
   c.addEventListener("session", (e) => {
@@ -1662,8 +1662,8 @@ async function teardown() {
 
 /** @param {unknown} err */
 async function onFatalError(err) {
-  console.error("[main] fatal:", err);
-  const message = err instanceof Error ? err.message : String(err);
+  const message = errorMessage(err);
+  console.error("[main] fatal:", message);
   try {
     await teardown();
   } catch (teardownError) {

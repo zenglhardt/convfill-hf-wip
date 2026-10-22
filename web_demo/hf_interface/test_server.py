@@ -101,3 +101,13 @@ def test_websocket_rejects_cross_origin_browser():
         with client.websocket_connect("/v1/realtime", headers={"origin": "https://untrusted.example"}):
             pass
     assert rejected.value.code == 1008
+
+
+def test_websocket_access_grants_are_redacted_from_logs():
+    import logging
+    record = logging.LogRecord("uvicorn.error", logging.INFO, "", 0,
+                               'WebSocket %s [accepted]',
+                               ('/v1/realtime?__sign=temporary-grant&model=s2s',), None)
+    assert server.RedactAccessGrants().filter(record)
+    assert "temporary-grant" not in record.getMessage()
+    assert "model=s2s" in record.getMessage()
