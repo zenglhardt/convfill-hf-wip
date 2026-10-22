@@ -297,7 +297,8 @@ managed CPU pipeline workers behind the approved test load balancer. Each worker
 uses the upstream `convfill_demo.pipeline` entry point with its existing pool size;
 VAD, output holds, cancellation, delivery ledgers, and histories live there. The
 Reasoner, Talker, STT, and TTS remain remote model services. Configure
-`LOAD_BALANCER_URL` and `LB_HF_TOKEN` server-side for `deploy/hf_space.py`; keep the
+`LOAD_BALANCER_URL` server-side for `deploy/hf_space.py`, and supply
+`LB_HF_TOKEN` only when the allocator has protected infrastructure ingress; keep the
 existing `SERPER_API_KEY` in the Space. The deployer preserves the private Space.
 
 `scripts/run_web_demo.sh` and `deploy/Dockerfile.single-session` retain the previous

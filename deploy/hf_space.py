@@ -18,12 +18,17 @@ def main():
     url = os.environ["LOAD_BALANCER_URL"].strip()
     if not url.startswith("https://"):
         raise ValueError("The session service must use HTTPS")
-    service_key = os.environ["LB_HF_TOKEN"]
+    service_key = os.environ.get("LB_HF_TOKEN", "").strip()
     api = HfApi(token=os.environ["HF_TOKEN"])
     if not api.space_info(repo).private:
         raise ValueError("Refusing to deploy this private demo to a public Space")
     api.add_space_secret(repo, "LOAD_BALANCER_URL", url)
-    api.add_space_secret(repo, "LB_HF_TOKEN", service_key)
+    if service_key:
+        api.add_space_secret(repo, "LB_HF_TOKEN", service_key)
+    elif "LB_HF_TOKEN" in api.get_space_secrets(repo):
+        # Public allocators need only the visitor's OAuth identity. Do not
+        # attribute anonymous requests to a shared service account.
+        api.delete_space_secret(repo, "LB_HF_TOKEN")
     api.add_space_variable(
         repo,
         "STARTUP_GREETING",
