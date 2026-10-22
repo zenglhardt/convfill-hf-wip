@@ -35,9 +35,7 @@ models, and browser checks. The baseline retains quantized
   in the in-app browser. The browser reached its microphone permission request;
   this browser profile did not provide a usable mic grant. No human listening
   or physical microphone/playback test is claimed.
-- **Hosted container:** the private smolagents Space built successfully and
-  ran the pipeline. Its server logs recorded a complete synthetic audio response.
-  All infrastructure operations were scoped to smolagents.
+- **Hosted speech validation passed:** the private smolagents Space completed two consecutive speech turns and a third after disconnect/reconnect, with actual STT and synthesized audio. Readiness returned HTTP 200 with no active session after the test. All infrastructure operations were scoped to smolagents.
 
 ## Timings from actual inference
 
@@ -75,17 +73,17 @@ shared-GPU contention, and a smaller KV budget have not been benchmarked.
 
 ## Remaining validation limits
 
-The deployed and local test services intermittently returned connection refusals
-or `ConnectError` from this validation host. Two local speech turns completed,
-but the reconnect's generated response failed on a Reasoner connection error;
-the failure propagated and the session was released. Hosted WebSocket testing
-reached a live session, but the client subsequently hit a keepalive timeout;
-a later attempt could not establish a TCP connection. Server-side generation
-alone is not proof of delivery or playback in the browser.
+Earlier validation requests intermittently returned connection refusals or
+`ConnectError` from this host. One local reconnect turn failed on a Reasoner
+connection error, propagated the failure, and released the session. An early
+hosted attempt hit a keepalive timeout. The final hosted protocol run passed
+all three speech turns, including reconnect. Audio arrived 167–190 ms after
+the final VAD notification; those numbers exclude earlier endpointing time and
+are not physical speaker latency. Delivered audio is not proof of human playback.
 
-A complete repeated hosted browser conversation, physical playback checks,
-and human verification of filler versus substantive playback remain to be
-completed on a stable validation connection. Scripted initial/substantive
+Physical microphone/playback checks and human verification of filler versus
+substantive playback remain to be completed in a browser with a microphone
+grant. Scripted initial/substantive
 transport interruption checks have passed. The final live
 transport fault-injection run passed; earlier attempts encountered upstream
 connection errors. Deterministic tests independently cover timeout, HTTP error,
@@ -99,5 +97,5 @@ recording of what the listener heard. No inference credentials or full real-user
 transcripts are included in the committed results.
 
 Machine-readable observations are in `validation/models.json`, `gpu.json`,
-`speech.json`, `faults.json`, and `bargein.json`. All prompts/audio used by the scripted speech checks were
+`speech.json`, `hosted-speech.json`, `faults.json`, and `bargein.json`. All prompts/audio used by the scripted speech checks were
 synthetic test material.
