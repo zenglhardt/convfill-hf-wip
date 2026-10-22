@@ -15,7 +15,7 @@ WORKDIR /app
 COPY deploy/requirements.txt /app/deploy/requirements.txt
 RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r deploy/requirements.txt
 # Keep this revision synchronized with pyproject.toml and UPSTREAM.md.
-RUN pip install --no-cache-dir --no-deps git+https://github.com/huggingface/speech-to-speech.git@0fb1f0c395796593233d8b2ced0eaa0832de3275
+RUN pip install --no-cache-dir --no-deps git+https://github.com/huggingface/speech-to-speech.git@44d6010cd20046b84ac58cf89ae2ac9ef5e2e150
 RUN python -m nltk.downloader -d /opt/nltk_data punkt_tab averaged_perceptron_tagger_eng
 COPY . /app
 COPY --from=browser /ui/node_modules /app/web_demo/hf_interface/node_modules

@@ -1,7 +1,7 @@
 # Upstream interface
 
 The browser source is synchronized with `huggingface/speech-to-speech` main
-`0fb1f0c395796593233d8b2ced0eaa0832de3275`, plus the feature changes in PR #750.
+`44d6010cd20046b84ac58cf89ae2ac9ef5e2e150`, plus the feature changes in PR #750.
 The Apache-2.0 license remains in LICENSE.huggingface-speech-to-speech.
 The runtime dependency stays pinned to that main revision.
 
@@ -38,3 +38,10 @@ to choose this route, and the same cancellation/deadline controls apply.
 The hosted header names “ConvFill's Talker and Gemma 4 Reasoner” above
 “on Hugging Face's speech-to-speech”, with a project-repository link. The
 phone layout keeps both lines visible and places controls on the next row.
+
+PR #751's default-on Faster interruptions setting, local Silero v6 detector,
+output gain control, and pinned model/worklet/WASM dependencies are synchronized
+with upstream main. The private gateway serves the same asset allowlist from
+node_modules copied into Docker. Local VAD only ducks volume; server VAD still
+owns cancellation/history. The browser test locates its audio fixture from the
+installed speech-to-speech package for this repository layout.
