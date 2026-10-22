@@ -1,15 +1,21 @@
-from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer, StoppingCriteria, StoppingCriteriaList
-import torch
 import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
-from pathlib import Path
+
+import torch
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    StoppingCriteria,
+    StoppingCriteriaList,
+    TextIteratorStreamer,
+)
+
 from src.inference.shared.turn_state_manager import TurnStateManager
-from src.inference.shared.dialogue_state_manager import DialogueStateManager
-import re
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?:(?<=[.!?])|(?<=[.!?][\"')\]]))\s+")
 
@@ -19,6 +25,21 @@ def _flush_sentences(buf: str) -> tuple[list[str], str]:
     if len(parts) == 1:
         return [], buf
     return [p for p in parts[:-1] if p.strip()], parts[-1]
+
+
+def _without_repeated_sentence_prefix(text: str, previous: str) -> str:
+    """Drop exact sentence echoes at a streaming handoff, never paraphrases."""
+
+    def key(value):
+        return re.findall(r"\w+(?:'\w+)*", value.replace("’", "'").casefold())
+
+    prior = [part.strip() for part in _SENTENCE_SPLIT_RE.split(previous.strip()) if part.strip()]
+    incoming = [part.strip() for part in _SENTENCE_SPLIT_RE.split(text.strip()) if part.strip()]
+    # Only a complete sentence with at least three words is an unambiguous echo.
+    while prior and incoming and len(key(incoming[0])) >= 3 and key(prior[-1]) == key(incoming[0]):
+        incoming.pop(0)
+    return " ".join(incoming)
+
 
 # remove faulty Gemma error
 logging.getLogger("transformers.utils.loading_report").setLevel(logging.ERROR)
@@ -67,6 +88,7 @@ class ConvFillFrontend:
     def load_model(self):
         if self.backend == "vllm":
             from .remote_inference import RemoteInference
+
             checkpoint = self.model_config["convfill_hf_pretrained_path"]
             revision = self.model_config.get("revision", "main")
             tokenizer = AutoTokenizer.from_pretrained(checkpoint, revision=revision)
@@ -80,9 +102,7 @@ class ConvFillFrontend:
 
         if not model_checkpoint_path:
             field_name = "convfill_hf_mlx_pretrained_path" if self.backend == "mlx" else "convfill_hf_pretrained_path"
-            raise ValueError(
-                f"{self.model_config_path} is missing {field_name}"
-            )
+            raise ValueError(f"{self.model_config_path} is missing {field_name}")
 
         config_dtype = self.model_config.get("torch_dtype")
         if self.dtype is not None:
@@ -138,8 +158,10 @@ class ConvFillFrontend:
         # Send exact IDs from the fine-tuned tokenizer: no chat template, no
         # added BOS, no re-tokenization by an unrelated base checkpoint.
         ids = self.tokenizer.encode(prompt, add_special_tokens=False)
-        stop_ids = [self.tokenizer.eos_token_id,
-                    self.tokenizer.encode(self.boundary_tokens["END"].strip(), add_special_tokens=False)[0]]
+        stop_ids = [
+            self.tokenizer.eos_token_id,
+            self.tokenizer.encode(self.boundary_tokens["END"].strip(), add_special_tokens=False)[0],
+        ]
         yield from self.remote.completion(ids, sorted(set(stop_ids)))
 
     def _load_hf(self, model_checkpoint_path, resolved_dtype):
@@ -184,6 +206,7 @@ class ConvFillFrontend:
 
     def _load_mlx(self, model_checkpoint_path):
         import mlx_lm
+
         model, tokenizer = mlx_lm.load(model_checkpoint_path)
         print("[MODEL SETUP] LOADED MLX MODEL", self.model_name, flush=True)
         print("[MODEL SETUP] LOADED WEIGHTS FROM", model_checkpoint_path, flush=True)
@@ -224,9 +247,7 @@ class ConvFillFrontend:
         return thoughts
 
     def _iter_hf_chunks(self, prompt):
-        encoded = self.tokenizer(
-            prompt, return_tensors="pt", padding=False, truncation=False
-        )
+        encoded = self.tokenizer(prompt, return_tensors="pt", padding=False, truncation=False)
         input_ids = encoded["input_ids"].to(self.device)
         pad_id = self.tokenizer.pad_token_id
 
@@ -297,9 +318,7 @@ class ConvFillFrontend:
         import mlx_lm
 
         n = 0
-        for resp in mlx_lm.stream_generate(
-            self.model, self.tokenizer, prompt=prompt, max_tokens=256
-        ):
+        for resp in mlx_lm.stream_generate(self.model, self.tokenizer, prompt=prompt, max_tokens=256):
             if self.cancel_event.is_set():
                 break
             n = resp.generation_tokens
@@ -320,6 +339,7 @@ class ConvFillFrontend:
         self.last_first_sentence_ms = None
 
         from .remote_inference import VisibleTextFilter
+
         visible = VisibleTextFilter()
         buf = ""
         raw_pending = ""
@@ -382,6 +402,12 @@ class ConvFillFrontend:
         )
         yield from self.run_convfill_inference(prompt)
 
+    def prepare_continuation(self, user_text, spoken_prefix):
+        """Resume a tool turn with the earlier Talker prefix in its prompt."""
+        self.reset_turn_state()
+        if spoken_prefix.strip():
+            self.turn_state_manager.add_user_turn(user_text)
+            self.turn_state_manager.add_response(spoken_prefix.strip())
 
     def infer_and_update_state(self, current_thought):
         history = self.dialogue_state_manager.get_history()
@@ -392,14 +418,18 @@ class ConvFillFrontend:
             current_thought=current_thought,
             history=history,
         ):
-            pieces.append(fragment)
-            yield fragment
+            previous = " ".join(self.turn_state_manager.responses + pieces)
+            fragment = _without_repeated_sentence_prefix(fragment, previous)
+            if fragment:
+                pieces.append(fragment)
+                yield fragment
         if self.cancel_event.is_set():
             return
         full_response = " ".join(pieces).strip()
         if self.turn_state_manager.user_turn_empty():
             self.turn_state_manager.add_user_turn(user_in)
-        self.turn_state_manager.add_response(full_response)
+        if full_response:
+            self.turn_state_manager.add_response(full_response)
         self.turn_state_manager.add_thought(current_thought)
 
     def get_final_response_and_reset_turn_state(self):

@@ -21,3 +21,9 @@ Tests cover connection, streaming tools, first-audio timing, and UI display.
 The hosted index retains its ConvFill branding and actual quantized Gemma, Talker,
 STT and TTS labels, rather than the shared demo’s provider/model credits. Tool
 controls and the updated gear fields remain from the current shared UI.
+
+Timing now uses one compact First audio disclosure, available before completion.
+Talker state is retained across tool continuations; exact sentence echoes are
+suppressed before speech and history commits. Quick tool-result continuations
+receive a one-second knowledge head start before fillers resume. The Reasoner
+supplies new substance rather than repeating acknowledgments or search preambles.
