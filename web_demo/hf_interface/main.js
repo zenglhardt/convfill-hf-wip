@@ -17,14 +17,13 @@
  * @typedef {S2sRealtimeClient} RealtimeClient
  */
 
-import { S2sRealtimeClient } from "./s2s-realtime-client.js";
+import { S2sRealtimeClient, normalizePlaybackBufferMs } from "./s2s-realtime-client.js?v=audio-24k-v2";
 import { $, truncateError, errorMessage, DEBUG } from "./ui/dom.js";
 import { ChatView } from "./ui/chat.js";
 import { Account } from "./ui/account.js";
 
 const DEFAULT_VOICE = "Aiden";
-const DEFAULT_INSTRUCTIONS =
-  "You are a friendly, concise voice assistant. Respond naturally for spoken conversation.";
+const DEFAULT_INSTRUCTIONS = "You are a friendly voice assistant.";
 
 const STORAGE_KEYS = {
   // Direct s2s server URL, used only when the deploy has no LOAD_BALANCER_URL
@@ -35,6 +34,7 @@ const STORAGE_KEYS = {
   tools: "s2s.ws.tools",
   searchKey: "s2s.ws.searchKey",
   noiseGate: "s2s.ws.noiseGate",
+  playbackBufferMs: "s2s.ws.playbackBufferMs",
   // "ws" | "webrtc". Not under the historical "s2s.ws." prefix — it selects
   // between the transports rather than configuring the WS one.
   transport: "s2s.transport",
@@ -113,6 +113,7 @@ function loadSettings() {
     voice: localStorage.getItem(STORAGE_KEYS.voice) || DEFAULT_VOICE,
     instructions: localStorage.getItem(STORAGE_KEYS.instructions) || DEFAULT_INSTRUCTIONS,
     noiseGate: loadGateThreshold(),
+    playbackBufferMs: normalizePlaybackBufferMs(localStorage.getItem(STORAGE_KEYS.playbackBufferMs)),
     // Default WebSocket: the proven path stays the first-run experience.
     transport: localStorage.getItem(STORAGE_KEYS.transport) === "webrtc" ? "webrtc" : "ws",
     audioInputId: localStorage.getItem(STORAGE_KEYS.audioInputId) || "",
@@ -139,6 +140,7 @@ function saveSettings(s) {
   localStorage.setItem(STORAGE_KEYS.voice, s.voice);
   localStorage.setItem(STORAGE_KEYS.instructions, s.instructions);
   localStorage.setItem(STORAGE_KEYS.noiseGate, String(s.noiseGate));
+  localStorage.setItem(STORAGE_KEYS.playbackBufferMs, String(s.playbackBufferMs));
   localStorage.setItem(STORAGE_KEYS.transport, s.transport);
   localStorage.setItem(STORAGE_KEYS.audioInputId, s.audioInputId || "");
   localStorage.setItem(STORAGE_KEYS.audioOutputId, s.audioOutputId || "");
@@ -148,17 +150,16 @@ function saveSettings(s) {
 function loadTools() {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEYS.tools) || "{}");
-    // Tools are opt-in for this voice-only demo. In particular, do not request
-    // camera access alongside the microphone on first use.
+    // Search requires a configured key; camera access is opt-in.
     // We never call getUserMedia on page load — the camera only actually starts
     // on a user gesture (conversation start), so a default-on flag doesn't
     // silently resume the webcam; an explicit saved `false` is respected.
     return {
-      web_search: raw.web_search ?? false,
+      web_search: raw.web_search ?? true,
       camera_snapshot: raw.camera_snapshot ?? false,
     };
   } catch {
-    return { web_search: false, camera_snapshot: false };
+    return { web_search: true, camera_snapshot: false };
   }
 }
 
@@ -263,6 +264,10 @@ const inputTransport = $("#transport");
 const transportHint = $("#transport-hint");
 /** @type {HTMLElement} */
 const gateField = $("#gate-field");
+/** @type {HTMLElement} */
+const playbackBufferField = $("#playback-buffer-field");
+/** @type {HTMLInputElement} */
+const inputPlaybackBuffer = $("#playback-buffer-ms");
 /** @type {HTMLSelectElement} */
 const inputVoice = $("#voice");
 /** @type {HTMLSelectElement} */
@@ -329,8 +334,8 @@ let startupGreeting = "";
 let activeTransport = "ws";
 
 // ── Tool state ──────────────────────────────────────────────────────────────
-// ConvFill normal mode has no tool dispatcher; keep this voice demo speech-only.
-let toolsEnabled = { web_search: false, camera_snapshot: false };
+let toolsAllowed = true;
+let toolsEnabled = loadTools();
 // Whether the server holds a Serper key (learned from /api/config on load).
 let serverSearchKey = false;
 // A user-supplied key (fallback when the deploy has none). localStorage only.
@@ -345,7 +350,11 @@ function searchAvailable() {
 
 /** Tool definitions for the currently-enabled (and usable) tools. */
 function activeToolDefs() {
-  return [];
+  if (!toolsAllowed) return [];
+  const defs = [];
+  if (toolsEnabled.web_search && searchAvailable()) defs.push(TOOL_DEFS.web_search);
+  if (toolsEnabled.camera_snapshot) defs.push(TOOL_DEFS.camera_snapshot);
+  return defs;
 }
 
 /** Push the active tool set to a live session so toggles apply mid-call. */
@@ -456,6 +465,7 @@ function setCaption(text, kind = "") {
 function openSettings() {
   syncConnectionUi();
   inputVoice.value = settings.voice;
+  inputPlaybackBuffer.value = String(settings.playbackBufferMs);
   inputInstructions.value = settings.instructions;
   syncGateUi();
   updateRestartAvailability();
@@ -628,7 +638,7 @@ function syncToolsUi() {
   }
 }
 
-toolsBtn.hidden = true;
+toolsBtn.addEventListener("click", () => { syncToolsUi(); toolsModal.showModal(); });
 toolsClose.addEventListener("click", () => toolsModal.close());
 toolsModal.addEventListener("click", (e) => {
   if (e.target === toolsModal) toolsModal.close();
@@ -890,6 +900,9 @@ async function fetchConfig() {
     const res = await fetch("api/config");
     if (res.ok) {
       const json = await res.json();
+      toolsAllowed = json.tools !== false;
+      toolsBtn.hidden = !toolsAllowed;
+      toolsBtn.style.display = toolsAllowed ? "" : "none";
       serverSearchKey = !!json.search;
       lbMode = !!json.lb;
       // Lock to LB mode only when the deploy reports a load balancer.
@@ -988,6 +1001,7 @@ function readSettingsFromForm() {
     voice: inputVoice.value || DEFAULT_VOICE,
     instructions: inputInstructions.value.trim() || DEFAULT_INSTRUCTIONS,
     noiseGate: readGateThreshold(),
+    playbackBufferMs: normalizePlaybackBufferMs(inputPlaybackBuffer.value),
     transport: /** @type {"ws" | "webrtc"} */ (
       transportSelectable()
         ? (inputTransport.value === "webrtc" ? "webrtc" : "ws")
@@ -1031,6 +1045,7 @@ function syncTransportUi() {
     ? "How audio travels to the server. Applies on the next conversation."
     : "WebRTC needs a server URL pinned by the deployment (SPEECH_TO_SPEECH_URL).";
   gateField.hidden = effectiveTransport() === "webrtc";
+  playbackBufferField.hidden = effectiveTransport() === "webrtc";
 }
 
 /** Adapt the connection field to the mode learned from /api/config. */
@@ -1430,6 +1445,7 @@ async function doStart(audioContext = null) {
         transport: "websocket",
         ...target,
         noiseGate: gateParams(settings.noiseGate),
+        playbackBufferMs: settings.playbackBufferMs,
         ...common,
       });
   client = c;
@@ -1476,8 +1492,9 @@ async function doStart(audioContext = null) {
     chat.onUserAudio(detail);
   });
 
+  c.addEventListener("playback-latency", (e) => chat.onPlaybackLatency(e.detail));
   c.addEventListener("response-finished", (e) => {
-    const detail = /** @type {CustomEvent<{ responseId: string; status: string; audible?: boolean; transcript?: string }>} */ (e).detail;
+    const detail = /** @type {CustomEvent<{ responseId: string; status: string; audible?: boolean; transcript?: string; latency?: import("./turn-latency.js").TurnLatency | null }>} */ (e).detail;
     chat.onResponseFinished(detail);
   });
   c.addEventListener("error", (e) => {
@@ -1677,10 +1694,12 @@ async function onFatalError(err) {
 setState("idle");
 chat.renderEmptyState();
 initGateArc();
-void fetchConfig();
-// Start the webcam as soon as the user lands (camera tool defaults on), and
-// react to later permission changes (re-grant after a denial re-enables it).
-// Camera and tools stay disabled for the hosted ConvFill normal-mode demo.
+void fetchConfig().then(() => {
+  if (toolsAllowed) {
+    void autoStartCamera();
+    void watchCameraPermission();
+  }
+});
 
 // Reconcile a live session if the tab is closed/hidden mid-call (no teardown).
 window.addEventListener("pagehide", () => { endTrackedSession(); endQueueTicket(); });

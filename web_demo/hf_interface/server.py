@@ -1,34 +1,34 @@
 """Local host for the Hugging Face realtime voice interface.
 
 The speech pipeline is a separate ``speech-to-speech serve`` process. This app
-only serves the browser UI, publishes its loopback realtime URL, and keeps an
-optional Serper key on the server side.
+only serves the browser UI, publishes its loopback realtime URL, and keeps all
+inference credentials on the server side.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-import asyncio
 import re
 from pathlib import Path
 
 import httpx
 import websockets
-from src.utils.api_keys import get_endpoint_api_key
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from src.utils.api_keys import get_endpoint_api_key
 
 HERE = Path(__file__).resolve().parent
 SPEECH_TO_SPEECH_URL = os.environ.get("SPEECH_TO_SPEECH_URL", "").strip()
 PIPELINE_URL = os.environ.get("CONVFILL_PIPELINE_URL", "ws://127.0.0.1:8765/v1/realtime")
 _session_active = False
-STARTUP_GREETING = os.environ.get("STARTUP_GREETING", "").strip()
-SERPER_API_KEY = os.environ.get("SERPER_API_KEY", "").strip()
-SERPER_URL = "https://google.serper.dev/search"
-MAX_RESULTS = 5
+DEFAULT_STARTUP_GREETING = "Greet the user warmly in one short sentence, then invite them to talk."
+SERPER_KEY = get_endpoint_api_key("SERPER_API_KEY")
+STARTUP_GREETING = os.environ.get("STARTUP_GREETING", DEFAULT_STARTUP_GREETING).strip()
 
 logger = logging.getLogger("convfill.speech_demo")
 
@@ -48,11 +48,6 @@ logging.getLogger("uvicorn.error").addFilter(RedactAccessGrants())
 app = FastAPI(title="ConvFill Hugging Face Voice Demo")
 
 
-class SearchRequest(BaseModel):
-    query: str
-    key: str | None = None
-
-
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
@@ -62,7 +57,8 @@ def healthz() -> dict[str, str]:
 def config(request: Request) -> dict[str, object]:
     scheme = "wss" if request.url.scheme == "https" else "ws"
     return {
-        "search": bool(SERPER_API_KEY),
+        "search": bool(SERPER_KEY),
+        "tools": True,
         "lb": False,
         "allowDirect": True,
         "s2sUrl": SPEECH_TO_SPEECH_URL or f"{scheme}://{request.url.netloc}/v1/realtime",
@@ -70,6 +66,43 @@ def config(request: Request) -> dict[str, object]:
         "iceServers": [],
         "startupGreeting": STARTUP_GREETING,
         "auth": False,
+    }
+
+
+class SearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=2000)
+    key: str | None = None
+
+
+@app.post("/api/search")
+async def search(req: SearchRequest):
+    query = req.query.strip()
+    if not query:
+        raise HTTPException(400, "Empty query.")
+    key = SERPER_KEY or (req.key or "").strip()
+    if not key:
+        raise HTTPException(503, "Search is not configured.")
+    try:
+        async with httpx.AsyncClient(timeout=12) as client:
+            response = await client.post(
+                "https://google.serper.dev/search",
+                headers={"X-API-KEY": key},
+                json={"q": query, "num": 5},
+            )
+        response.raise_for_status()
+        data = response.json()
+    except (httpx.HTTPError, ValueError):
+        # Never relay provider error bodies: they may contain request data.
+        raise HTTPException(502, "Search provider unavailable.")
+    box = data.get("answerBox") or {}
+    graph = data.get("knowledgeGraph") or {}
+    return {
+        "query": query,
+        "answer": box.get("answer") or box.get("snippet") or graph.get("description"),
+        "results": [
+            {"title": item.get("title", ""), "snippet": item.get("snippet", ""), "url": item.get("link", "")}
+            for item in (data.get("organic") or [])[:5]
+        ],
     }
 
 
@@ -90,7 +123,11 @@ async def readyz():
                     response = await client.get(base_url.rstrip("/") + "/models", headers=headers)
                     response.raise_for_status()
                     models = [model["id"] for model in response.json().get("data", [])]
-                    expected = os.environ.get("CONVFILL_REASONER_MODEL", "nvidia/Gemma-4-31B-IT-NVFP4") if stage == "REASONER" else "vysri/Qwen-0.6B-ConvFill"
+                    expected = (
+                        os.environ.get("CONVFILL_REASONER_MODEL", "nvidia/Gemma-4-31B-IT-NVFP4")
+                        if stage == "REASONER"
+                        else "vysri/Qwen-0.6B-ConvFill"
+                    )
                     if expected not in models:
                         raise ValueError("Configured model is not ready")
     except (httpx.HTTPError, ValueError):
@@ -119,6 +156,7 @@ async def realtime(socket: WebSocket):
         protocols = socket.scope.get("subprotocols", [])
         await socket.accept(subprotocol="realtime" if "realtime" in protocols else None)
         async with websockets.connect(PIPELINE_URL, open_timeout=10, max_size=8 * 1024 * 1024) as backend:
+
             async def upstream():
                 while True:
                     message = await socket.receive()
@@ -159,65 +197,14 @@ def me() -> dict[str, bool]:
 
 @app.get("/vendor/openai-realtime-agents.umd.js", include_in_schema=False)
 def agents_sdk_bundle() -> FileResponse:
-    path = (
-        HERE
-        / "node_modules"
-        / "@openai"
-        / "agents-realtime"
-        / "dist"
-        / "bundle"
-        / "openai-realtime-agents.umd.js"
-    )
+    path = HERE / "node_modules" / "@openai" / "agents-realtime" / "dist" / "bundle" / "openai-realtime-agents.umd.js"
     if not path.is_file():
         raise HTTPException(
             status_code=503,
-            detail="Browser dependencies are missing; run npm ci in web_demo/hf_interface.",
+            detail="Browser dependencies are missing; run npm ci --prefix demo.",
         )
     return FileResponse(path, media_type="text/javascript")
 
 
-@app.post("/api/search")
-async def search(req: SearchRequest) -> JSONResponse:
-    query = req.query.strip()
-    if not query:
-        raise HTTPException(status_code=400, detail="Empty query.")
-    key = (req.key or "").strip() or SERPER_API_KEY
-    if not key:
-        raise HTTPException(status_code=503, detail="Search is not configured.")
-
-    try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
-            response = await client.post(
-                SERPER_URL,
-                headers={"X-API-KEY": key, "Content-Type": "application/json"},
-                json={"q": query, "num": MAX_RESULTS},
-            )
-    except httpx.RequestError as exc:
-        logger.warning("Serper unreachable: %r", exc)
-        raise HTTPException(status_code=502, detail="Search provider unreachable.") from exc
-
-    if response.status_code != 200:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Search provider error ({response.status_code}).",
-        )
-
-    data = response.json()
-    results = [
-        {
-            "title": item.get("title", ""),
-            "snippet": item.get("snippet", ""),
-            "url": item.get("link", ""),
-        }
-        for item in (data.get("organic") or [])[:MAX_RESULTS]
-    ]
-    answer_box = data.get("answerBox") or {}
-    answer = answer_box.get("answer") or answer_box.get("snippet")
-    if not answer:
-        answer = (data.get("knowledgeGraph") or {}).get("description")
-    return JSONResponse({"query": query, "answer": answer, "results": results})
-
-
 # Registered last so API and vendor routes win.
 app.mount("/", StaticFiles(directory=HERE, html=True), name="static")
-

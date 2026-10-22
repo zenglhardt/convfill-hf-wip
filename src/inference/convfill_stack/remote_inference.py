@@ -1,4 +1,5 @@
 """Bounded, cancellable OpenAI-compatible SSE inference, without provider SDKs."""
+
 from __future__ import annotations
 
 import json
@@ -6,8 +7,10 @@ import os
 import queue
 import threading
 import time
+from uuid import uuid4
 
 import httpx
+
 from src.utils.api_keys import get_endpoint_api_key
 
 
@@ -34,9 +37,9 @@ class VisibleTextFilter:
             if self.block_end:
                 at = self.pending.find(self.block_end)
                 if at < 0:
-                    self.pending = self.pending[-len(self.block_end):]
+                    self.pending = self.pending[-len(self.block_end) :]
                     break
-                self.pending = self.pending[at + len(self.block_end):]
+                self.pending = self.pending[at + len(self.block_end) :]
                 self.block_end = None
                 continue
             at = self.pending.find("<")
@@ -51,19 +54,19 @@ class VisibleTextFilter:
                 if len(self.pending) > 256:
                     raise InferenceError("Unterminated inference control token")
                 break
-            tag = self.pending[:end + 1]
+            tag = self.pending[: end + 1]
             if tag == "<|channel>":
                 newline = self.pending.find("\n", end)
                 if newline < 0:
                     if len(self.pending) > 256:
                         raise InferenceError("Unterminated inference channel")
                     break
-                channel = self.pending[end + 1:newline].strip()
-                self.pending = self.pending[newline + 1:]
+                channel = self.pending[end + 1 : newline].strip()
+                self.pending = self.pending[newline + 1 :]
                 if channel in ("thought", "analysis"):
                     self.block_end = "<channel|>"
                 continue
-            self.pending = self.pending[end + 1:]
+            self.pending = self.pending[end + 1 :]
             if tag == "<think>":
                 self.block_end = "</think>"
             # All other serialized control tokens are intentionally dropped.
@@ -91,6 +94,12 @@ class RemoteInference:
         self.transport = transport
         self._lock = threading.Lock()
         self._active = set()
+
+    def configure_request(self, *, messages=None, tools=None, instructions="", on_tool_call=None):
+        self.context_messages = messages or []
+        self.context_tools = tools or []
+        self.context_instructions = instructions or ""
+        self.on_tool_call = on_tool_call
 
     def begin_turn(self, cancel_event):
         self.cancel_event = cancel_event
@@ -123,7 +132,9 @@ class RemoteInference:
         def read():
             try:
                 timeout = httpx.Timeout(self.read_timeout, connect=self.connect_timeout)
-                with httpx.Client(timeout=timeout, transport=self.transport or httpx.HTTPTransport(retries=2)) as client:
+                with httpx.Client(
+                    timeout=timeout, transport=self.transport or httpx.HTTPTransport(retries=2)
+                ) as client:
                     if cancel.is_set() or stopped.is_set():
                         return
                     with client.stream("POST", self.base_url + route, headers=headers, json=payload) as response:
@@ -157,7 +168,11 @@ class RemoteInference:
                             with self._lock:
                                 self._active.discard(response)
             except Exception as exc:
-                error = exc if isinstance(exc, InferenceError) else InferenceError(f"Inference stream failed ({type(exc).__name__})")
+                error = (
+                    exc
+                    if isinstance(exc, InferenceError)
+                    else InferenceError(f"Inference stream failed ({type(exc).__name__})")
+                )
                 put(("error", error))
 
         worker = threading.Thread(target=read, daemon=True, name="convfill-http-stream")
@@ -193,8 +208,14 @@ class RemoteInference:
         # default explicitly omits it, as well as sending enable_thinking=false.
         payload = {
             "model": self.model,
-            "messages": [{"role": "system", "content": ("<|think|>" if thinking else "") + "Supply concise factual knowledge sentences. Do not include internal reasoning."},
-                         {"role": "user", "content": prompt}],
+            "messages": [
+                {
+                    "role": "system",
+                    "content": ("<|think|>" if thinking else "")
+                    + "Supply concise factual knowledge sentences. Do not include internal reasoning.",
+                },
+                {"role": "user", "content": prompt},
+            ],
             "stream": True,
             "max_tokens": int(self.config.get("max_tokens", 256)),
             "temperature": float(self.config.get("temperature", 1.0)),
@@ -202,26 +223,52 @@ class RemoteInference:
             "top_k": int(self.config.get("top_k", 64)),
             "chat_template_kwargs": {"enable_thinking": thinking},
         }
+        payload["messages"][0]["content"] += "\n" + getattr(self, "context_instructions", "")
+        payload["messages"].extend(getattr(self, "context_messages", []))
+        tools = getattr(self, "context_tools", [])
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        calls = {}
         seen_text = False
         for event in self.stream("/chat/completions", payload):
             for choice in event.get("choices", []):
-                text = choice.get("delta", {}).get("content") or ""
+                delta = choice.get("delta", {})
+                for call in delta.get("tool_calls") or []:
+                    entry = calls.setdefault(call.get("index", 0), {"id": "", "name": "", "arguments": ""})
+                    entry["id"] += call.get("id") or ""
+                    function = call.get("function") or {}
+                    entry["name"] += function.get("name") or ""
+                    entry["arguments"] += function.get("arguments") or ""
+                text = delta.get("content") or ""
                 safe_text = visible.feed(text)
                 seen_text = seen_text or bool(safe_text.strip())
                 yield from parser.feed(safe_text)
         if not cancel.is_set():
-            if not seen_text:
+            if not seen_text and not calls:
                 raise InferenceError("Reasoner returned no visible knowledge")
             yield from parser.flush()
+            allowed = {tool["function"]["name"] for tool in tools}
+            for call in calls.values():
+                if call["name"] not in allowed or not callable(getattr(self, "on_tool_call", None)):
+                    raise InferenceError("Reasoner requested an unavailable tool")
+                arguments = call["arguments"] or "{}"
+                if not isinstance(json.loads(arguments), dict):
+                    raise InferenceError("Reasoner returned invalid tool arguments")
+                self.on_tool_call(call["name"], arguments, call["id"] or "call_" + uuid4().hex)
 
     def completion(self, token_ids, stop_ids):
         payload = {
-            "model": self.model, "prompt": token_ids, "stream": True,
+            "model": self.model,
+            "prompt": token_ids,
+            "stream": True,
             "stream_options": {"include_usage": True},
             "max_tokens": int(self.config.get("max_tokens", 256)),
             "temperature": float(self.config.get("temperature", 0)),
-            "stop_token_ids": stop_ids, "skip_special_tokens": False,
-            "include_stop_str_in_output": False, "echo": False,
+            "stop_token_ids": stop_ids,
+            "skip_special_tokens": False,
+            "include_stop_str_in_output": False,
+            "echo": False,
         }
         count = 0
         for event in self.stream("/completions", payload):

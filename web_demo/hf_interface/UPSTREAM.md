@@ -1,37 +1,19 @@
 # Upstream interface
 
-The browser interface in this directory is derived from the `demo/` directory
-of [huggingface/speech-to-speech](https://github.com/huggingface/speech-to-speech)
-at commit `b21e54d6a845c54308bc62500b57f9a2b2aa93ac`.
+The browser source is synchronized with `huggingface/speech-to-speech` main
+`0fb1f0c395796593233d8b2ced0eaa0832de3275`, plus the feature changes in PR #750.
+The Apache-2.0 license remains in LICENSE.huggingface-speech-to-speech.
+The runtime dependency stays pinned to that main revision.
 
-The upstream project is licensed under Apache-2.0. Its license is retained in
-`LICENSE.huggingface-speech-to-speech`. Local integration files are
-`server.py`, `test_server.py`, and this notice.
+Local server.py provides a private same-origin WebSocket gateway, one-session
+admission, readiness checks, optional server-side Serper search, and a short
+startup greeting. Camera is opt-in. The shared UI now includes the current gear
+menu and response timing display. The playback additions measure estimated
+speech-end to first non-silent frame on the browser output clock, not physical
+speaker playback. Dispatched text remains only a best-effort interrupted-history
+proxy. Native tools and camera context go only to the Reasoner.
 
-
-Runtime compatibility is pinned to speech-to-speech commit
-`0fb1f0c395796593233d8b2ced0eaa0832de3275` (upstream main on October 22, 2026).
-The browser source retains the base revision above. Local server additions provide
-a same-origin WebSocket proxy, readiness and one-session admission. Inference
-credentials remain server-side. Playback is estimated from dispatched audio;
-there is no browser playback acknowledgement and dispatched text is not proof
-that a sentence was heard.
-
-`main.js` also disables tool declarations and hides tool settings in normal mode;
-the hosted speech-only demo does not request camera access.
-
-`index.html` identifies the hosted quantized Gemma Reasoner and remote speech
-models, and hides the unsupported tool controls.
-
-Private Space connection fix: `connection-url.js` forwards the embedding page's
-short-lived `__sign` grant only to its same-origin HTTPS/WSS connection. This
-supports browsers that cannot authenticate the private Space WebSocket with
-iframe cookies. No inference API key is put in the browser. `ui/dom.js`
-normalizes opaque SDK/browser errors, and `server.py` redacts access grants
-from Uvicorn's WebSocket logs. Regression coverage lives in
-`tests/connection.test.mjs` and `test_server.py`.
-
-The proxy also explicitly selects the SDK's `realtime` WebSocket subprotocol.
-Browser handshakes require a selection when protocols are offered; the Python
-WebSocket client permits no selection and previously hid this incompatibility.
-The live access check now asserts the negotiated protocol as well as session events.
+connection-url.js forwards the private Space’s short-lived __sign grant only to
+same-origin HTTPS/WSS. The gateway redacts grants from WebSocket logs and selects
+the realtime subprotocol. Inference and server search credentials stay server-side.
+Tests cover connection, streaming tools, first-audio timing, and UI display.

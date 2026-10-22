@@ -1,4 +1,5 @@
 """Real HTTP framing with fake model output; no model inference in this suite."""
+
 import json
 import threading
 import time
@@ -8,17 +9,18 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from src.inference.convfill_stack.remote_inference import RemoteInference, InferenceError, VisibleTextFilter
 from src.inference.convfill_stack.convfill_frontend import ConvFillFrontend
-from src.inference.convfill_stack.run_convfill import ConvFillSystem
 from src.inference.shared.dialogue_state_manager import DialogueStateManager
+from src.inference.convfill_stack.remote_inference import InferenceError, RemoteInference, VisibleTextFilter
 from src.inference.shared.turn_state_manager import TurnStateManager
+
 from .test_reasoner_cancel import _bare_system
 
 
 def sse(*events, done=True):
-    return ("".join("data: " + json.dumps(event) + "\n\n" for event in events)
-            + ("data: [DONE]\n\n" if done else "")).encode()
+    return (
+        "".join("data: " + json.dumps(event) + "\n\n" for event in events) + ("data: [DONE]\n\n" if done else "")
+    ).encode()
 
 
 def chat(text=None, **extra):
@@ -27,44 +29,77 @@ def chat(text=None, **extra):
 
 def test_reasoner_stream_filters_chunked_thoughts_and_flushes_tail():
     requests = []
+
     def respond(request):
         requests.append(json.loads(request.content))
-        return httpx.Response(200, content=sse(
-            {"choices": []}, chat(), chat("", reasoning_content="private thought"),
-            chat("<|chan"), chat("nel>thought\nsecret. Never speak this. "),
-            chat("<chan"), chat("nel|>Useful fact. "), chat("Final fact without punctuation")))
+        return httpx.Response(
+            200,
+            content=sse(
+                {"choices": []},
+                chat(),
+                chat("", reasoning_content="private thought"),
+                chat("<|chan"),
+                chat("nel>thought\nsecret. Never speak this. "),
+                chat("<chan"),
+                chat("nel|>Useful fact. "),
+                chat("Final fact without punctuation"),
+            ),
+        )
+
     remote = RemoteInference({"base_url": "http://model/v1", "model": "gemma"}, transport=httpx.MockTransport(respond))
     assert list(remote.knowledge("conversation")) == ["Useful fact.", "Final fact without punctuation"]
     assert requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
     assert "<|think|>" not in requests[0]["messages"][0]["content"]
 
 
-@pytest.mark.parametrize("body,status", [(b"", 503), (sse(chat("unfinished"), done=False), 200),
-                                        (b'data: {broken}\n\n', 200), (sse({"error": {"message": "secret"}}), 200)])
+@pytest.mark.parametrize(
+    "body,status",
+    [
+        (b"", 503),
+        (sse(chat("unfinished"), done=False), 200),
+        (b"data: {broken}\n\n", 200),
+        (sse({"error": {"message": "secret"}}), 200),
+    ],
+)
 def test_remote_http_and_truncated_stream_errors(body, status):
-    remote = RemoteInference({"base_url": "http://model/v1", "model": "gemma"},
-                             transport=httpx.MockTransport(lambda request: httpx.Response(status, content=body)))
+    remote = RemoteInference(
+        {"base_url": "http://model/v1", "model": "gemma"},
+        transport=httpx.MockTransport(lambda request: httpx.Response(status, content=body)),
+    )
     with pytest.raises(InferenceError):
         list(remote.knowledge("prompt"))
 
 
 def test_raw_talker_prompt_ids_preserve_knowledge_silence_history_and_boundaries():
-    boundaries = {"USER_START": "<|im_start|>user\n", "ASSN_START": "<|im_start|>assistant\n",
-                  "KNOWLEDGE_START": "<|im_start|>knowledge\n", "END": "<|im_end|>\n"}
+    boundaries = {
+        "USER_START": "<|im_start|>user\n",
+        "ASSN_START": "<|im_start|>assistant\n",
+        "KNOWLEDGE_START": "<|im_start|>knowledge\n",
+        "END": "<|im_end|>\n",
+    }
     turn = TurnStateManager(boundaries)
     prompt = turn.build_prompt("new", "<sil>", {"user_turns_history": ["old"], "responses_history": ["reply"]})
-    assert prompt == ("<|im_start|>user\nold<|im_end|>\n<|im_start|>assistant\nreply<|im_end|>\n"
-                      "<|im_start|>user\nnew<|im_end|>\n<|im_start|>knowledge\n<sil><|im_end|>\n<|im_start|>assistant\n")
+    assert prompt == (
+        "<|im_start|>user\nold<|im_end|>\n<|im_start|>assistant\nreply<|im_end|>\n"
+        "<|im_start|>user\nnew<|im_end|>\n<|im_start|>knowledge\n<sil><|im_end|>\n<|im_start|>assistant\n"
+    )
     calls = []
+
     def respond(request):
         calls.append((request.url.path, json.loads(request.content)))
         return httpx.Response(200, content=sse({"choices": [{"text": "Spoken sentence."}]}))
-    remote = RemoteInference({"base_url": "http://model/v1", "model": "fine-tuned"}, transport=httpx.MockTransport(respond))
+
+    remote = RemoteInference(
+        {"base_url": "http://model/v1", "model": "fine-tuned"}, transport=httpx.MockTransport(respond)
+    )
+
     class Tokenizer:
         eos_token_id = 151645
+
         def encode(self, value, add_special_tokens):
             assert add_special_tokens is False
             return [151645] if value == "<|im_end|>" else [151644, 42, 151669, 151645]
+
     frontend = ConvFillFrontend.__new__(ConvFillFrontend)
     frontend.remote, frontend.tokenizer, frontend.boundary_tokens = remote, Tokenizer(), boundaries
     assert list(frontend._iter_remote_chunks(prompt)) == [("Spoken sentence.", 1)]
@@ -81,6 +116,7 @@ def test_reasoner_exception_is_raised_by_backend_generator():
         def backend_infer(self):
             raise RuntimeError("reasoner failed")
             yield
+
     system = _bare_system(Backend())
     with pytest.raises(RuntimeError, match="reasoner failed"):
         list(system.backend_fn())
@@ -91,6 +127,7 @@ def test_background_failure_reaches_run_turn_and_rolls_back_history():
         def backend_infer(self):
             raise RuntimeError("reasoner failed")
             yield
+
     system = _bare_system(Backend())
     system._turn_lock = threading.Lock()
     system._commit_lock = threading.RLock()
@@ -108,6 +145,7 @@ def test_background_failure_reaches_run_turn_and_rolls_back_history():
 @pytest.mark.parametrize("cancel", [True, False])
 def test_socket_stall_is_bounded_and_cancel_does_not_flush_partial_text(cancel):
     started, release = threading.Event(), threading.Event()
+
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             self.rfile.read(int(self.headers["Content-Length"]))
@@ -118,18 +156,28 @@ def test_socket_stall_is_bounded_and_cancel_does_not_flush_partial_text(cancel):
             self.wfile.flush()
             started.set()
             release.wait(2)
+
         def log_message(self, *args):
             pass
+
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    remote = RemoteInference({"base_url": f"http://127.0.0.1:{server.server_port}/v1", "model": "gemma",
-                              "read_timeout_s": 1, "request_timeout_s": 0.25})
+    remote = RemoteInference(
+        {
+            "base_url": f"http://127.0.0.1:{server.server_port}/v1",
+            "model": "gemma",
+            "read_timeout_s": 1,
+            "request_timeout_s": 0.25,
+        }
+    )
     output, errors = [], []
+
     def run():
         try:
             output.extend(remote.knowledge("prompt"))
         except InferenceError as exc:
             errors.append(exc)
+
     worker = threading.Thread(target=run)
     try:
         worker.start()
@@ -163,11 +211,13 @@ def test_cancellation_event_is_not_reused_by_next_turn():
 
 def test_reasoner_can_deliver_next_knowledge_while_talker_is_generating():
     started, release = threading.Event(), threading.Event()
+
     class Backend:
         def backend_infer(self):
             yield "First fact."
             assert started.wait(1)
             yield "Second fact."
+
     system = _bare_system(Backend())
     system._turn_lock, system._commit_lock = threading.Lock(), threading.RLock()
     system._poisoned = False
@@ -175,11 +225,14 @@ def test_reasoner_can_deliver_next_knowledge_while_talker_is_generating():
     system.dialogue_state_manager = DialogueStateManager()
     system.convfill_frontend = SimpleNamespace(reset_turn_state=lambda: None)
     overlap = []
+
     def on_thought(value):
         if value == "Second fact.":
             overlap.append(system._frontend_inflight > 0)
             release.set()
+
     system.on_thought = on_thought
+
     def frontend():
         assert system.thought_queue.get(timeout=1) == "First fact."
         with system._frontend_inflight_lock:
@@ -187,6 +240,7 @@ def test_reasoner_can_deliver_next_knowledge_while_talker_is_generating():
         started.set()
         assert release.wait(1)
         assert system.thought_queue.get(timeout=1) == "Second fact."
+
     system.run_frontend = frontend
     assert system.run_turn("question") is True
     assert overlap == [True]
@@ -194,10 +248,12 @@ def test_reasoner_can_deliver_next_knowledge_while_talker_is_generating():
 
 def test_stuck_worker_is_bounded_and_pipeline_cannot_reuse_its_state():
     release = threading.Event()
+
     class Backend:
         def backend_infer(self):
             return
             yield
+
     system = _bare_system(Backend())
     system._turn_lock, system._commit_lock = threading.Lock(), threading.RLock()
     system._poisoned = False
@@ -219,8 +275,10 @@ def test_stuck_worker_is_bounded_and_pipeline_cannot_reuse_its_state():
 
 
 def test_empty_reasoner_does_not_commit_a_filler_only_turn():
-    remote = RemoteInference({"base_url": "http://model/v1", "model": "gemma"},
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=sse(chat(None)))))
+    remote = RemoteInference(
+        {"base_url": "http://model/v1", "model": "gemma"},
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=sse(chat(None)))),
+    )
     with pytest.raises(InferenceError, match="no visible knowledge"):
         list(remote.knowledge("prompt"))
 
@@ -231,6 +289,7 @@ def test_talker_stops_on_a_turn_boundary_split_across_chunks():
     frontend.boundary_tokens = {"END": "<|im_end|>\n"}
     frontend.cancel_event = threading.Event()
     closed = threading.Event()
+
     def chunks(prompt):
         try:
             yield "Hello. <|im_", 1
@@ -238,6 +297,55 @@ def test_talker_stops_on_a_turn_boundary_split_across_chunks():
             raise AssertionError("Talker stream was read beyond its stop boundary")
         finally:
             closed.set()
+
     frontend._iter_remote_chunks = chunks
     assert list(frontend.run_convfill_inference("serialized prompt")) == ["Hello."]
     assert closed.is_set()
+
+
+def test_streamed_tools_keep_arguments_out_of_knowledge_and_preserve_context():
+    requests, calls = [], []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            content=sse(
+                chat(
+                    tool_calls=[
+                        {"index": 0, "id": "call_1", "function": {"name": "web_search", "arguments": '{"query":'}}
+                    ]
+                ),
+                chat(tool_calls=[{"index": 0, "function": {"arguments": '"weather"}'}}]),
+            ),
+        )
+
+    remote = RemoteInference({"base_url": "http://model/v1", "model": "gemma"}, transport=httpx.MockTransport(respond))
+    messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}]}]
+    remote.configure_request(
+        messages=messages,
+        tools=[{"type": "function", "function": {"name": "web_search", "parameters": {"type": "object"}}}],
+        instructions="Be brief.",
+        on_tool_call=lambda *args: calls.append(args),
+    )
+    assert list(remote.knowledge("prompt")) == []
+    assert calls == [("web_search", '{"query":"weather"}', "call_1")]
+    assert requests[0]["messages"][-1] == messages[0]
+    assert "Be brief." in requests[0]["messages"][0]["content"]
+    assert requests[0]["tool_choice"] == "auto"
+
+
+def test_cancelled_tool_stream_never_dispatches_call():
+    remote = RemoteInference({"base_url": "http://model/v1", "model": "gemma"})
+    calls = []
+    remote.configure_request(
+        tools=[{"function": {"name": "web_search"}}], on_tool_call=lambda *args: calls.append(args)
+    )
+
+    def events(*args):
+        yield chat(tool_calls=[{"index": 0, "function": {"name": "web_search", "arguments": "{}"}}])
+        remote.cancel_event.set()
+
+    remote.stream = events
+    assert list(remote.knowledge("prompt")) == []
+    assert calls == []
