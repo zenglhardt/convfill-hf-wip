@@ -45,3 +45,10 @@ with upstream main. The private gateway serves the same asset allowlist from
 node_modules copied into Docker. Local VAD only ducks volume; server VAD still
 owns cancellation/history. The browser test locates its audio fixture from the
 installed speech-to-speech package for this repository layout.
+
+The demo holds assistant output for 500 ms after a Smart Turn complete decision
+and 1700 ms after an incomplete decision, 300 ms below each upstream default.
+Override with `CONVFILL_COMPLETE_HOLD_MS` / `CONVFILL_INCOMPLETE_HOLD_MS`. The
+600 ms incomplete-turn processing delay stays inside the incomplete hold window;
+it is not added afterward. Model generation may overlap these windows, so measured
+residual hold and first-audio latency will vary with inference time.
