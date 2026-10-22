@@ -22,6 +22,16 @@ def main():
     api = HfApi(token=os.environ["HF_TOKEN"])
     if not api.space_info(repo).private:
         raise ValueError("Refusing to deploy this private demo to a public Space")
+    # Model inference belongs to workers; remove obsolete frontend credentials.
+    existing_secrets = api.get_space_secrets(repo)
+    existing_variables = api.get_space_variables(repo)
+    for stage in ("REASONER", "TALKER", "STT", "TTS"):
+        name = "CONVFILL_" + stage + "_API_KEY"
+        if name in existing_secrets:
+            api.delete_space_secret(repo, name)
+        name = "CONVFILL_" + stage + "_URL"
+        if name in existing_variables:
+            api.delete_space_variable(repo, name)
     api.add_space_secret(repo, "LOAD_BALANCER_URL", url)
     if service_key:
         api.add_space_secret(repo, "LB_HF_TOKEN", service_key)
