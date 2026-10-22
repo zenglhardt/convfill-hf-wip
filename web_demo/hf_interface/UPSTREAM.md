@@ -27,3 +27,10 @@ Talker state is retained across tool continuations; exact sentence echoes are
 suppressed before speech and history commits. Quick tool-result continuations
 receive a one-second knowledge head start before fillers resume. The Reasoner
 supplies new substance rather than repeating acknowledgments or search preambles.
+
+The user-authorized startup greeting is an explicit exception to Talker-only TTS:
+`speech_to_speech.startup_greeting=true` on the first response routes Gemma’s
+filtered greeting directly to TTS, with no Talker, fillers, or tools. Its greeting
+prompt is separate from the Reasoner knowledge prompt. Both histories retain the
+reply; ordinary turns continue to speak only the Talker. No text matching is used
+to choose this route, and the same cancellation/deadline controls apply.
