@@ -1,0 +1,103 @@
+# Validation — October 22, 2026
+
+These results distinguish real inference, transport fault injection, simulated
+models, and browser checks. The baseline retains quantized
+`nvidia/Gemma-4-31B-IT-NVFP4`, not the original BF16 checkpoint.
+
+## Completed checks
+
+- **48 Python tests pass**, including the existing adapter/delivery tests, raw
+  prompt preservation, split stop tokens, empty chunks, buffered final text,
+  thought filtering, HTTP/SSE failures, a real loopback stalled socket,
+  cancellation, Reasoner/Talker overlap, stuck-worker quarantine, cross-origin
+  rejection, single-session admission and clean proxy reconnects.
+- **1 browser adapter JS test passes.** The fake-model and loopback tests do not
+  claim actual model or browser playback validation.
+- **Actual model inference:** three consecutive turns completed. The Talker
+  retained the expected sky-color fact and remembered the synthetic user's
+  name on a follow-up. Useful Reasoner knowledge arrived while Talker generation
+  was active in all three turns. No serialized thought/control tokens appeared
+  in the generated Talker fragments.
+- **Live transport fault injection with actual models:** all four checks passed. With a three-second injected Reasoner delay, Talker output started at 0.434 s and useful knowledge at 3.850 s. Injected HTTP 503 propagated in 0.227 s; a deliberately cut real response stream failed in 0.671 s; a 0.4-second request deadline returned in 0.787 s, including shutdown. All failed turns left zero history entries. These are controlled faults, not claims about provider uptime.
+- **Actual stream cancellation:** a running real inference turn returned in
+  0.173 seconds after cancellation, with no error. Session reset cleared history.
+- **Actual speech transport:** synthetic microphone PCM passed through real
+  Silero/Smart Turn VAD, Qwen3-ASR, ConvFill, Gemma, and Qwen3-TTS. A first turn
+  and a follow-up completed with nonempty audio and STT results.
+- **Actual barge-in checks passed:** both the first-audio and substantive-text-triggered cases completed with `status=cancelled`. VAD confirmed the injected speech after 523–526 ms, with zero old-response audio frames observed after confirmation. Cancellation and speech-start notifications arrived within 0.1 ms of one another; cancellation was ordered first. These are transport observations, not physical playback guarantees.
+- **Additional actual barge-in observation:** synthetic input during an initial audio response
+  triggered VAD, cancelled the response, flushed its queue, and cancelled the
+  active TTS request. Server logs show response cancellation about 13 ms after
+  VAD confirmation, and TTS cancellation about 36 ms after confirmation.
+  The client test initially assumed the opposite event order: upstream can
+  deliver `response.done` before `input_audio_buffer.speech_started`.
+- **Browser UI:** visually checked the Gemma labels and disabled tool controls
+  in the in-app browser. The browser reached its microphone permission request;
+  this browser profile did not provide a usable mic grant. No human listening
+  or physical microphone/playback test is claimed.
+- **Hosted container:** the private smolagents Space built successfully and
+  ran the pipeline. Its server logs recorded a complete synthetic audio response.
+  All infrastructure operations were scoped to smolagents.
+
+## Timings from actual inference
+
+| Measurement | Turn 1 | Turn 2 | Turn 3 |
+| --- | ---: | ---: | ---: |
+| First useful Reasoner sentence | 0.702 s | 0.546 s | 0.743 s |
+| First Talker sentence (may be filler) | 0.425 s | 0.410 s | 0.545 s |
+| Full text inference turn | 2.044 s | 1.171 s | 1.517 s |
+
+Actual speech-end-to-first-audio, measured by the native speech pipeline, was
+**3.426 s and 2.631 s** for the two completed local-gateway speech turns.
+These include endpointing/Smart Turn delays. First audio arrived **634 ms and
+479 ms after the final VAD notification** at the WebSocket client; these smaller
+numbers exclude time before that notification and are not full speech-end
+latency. They are audio arrival times, not sound-card playback measurements.
+The hosted server's first synthetic turn measured **11.292 s**, including its
+startup/endpointing path. This is a single cold observation, not a steady-state
+latency estimate. No latency percentile is inferred from this sample size.
+
+## GPU memory
+
+Whole-replica OpenMetrics samples during validation showed:
+
+| Service | Maximum sampled bytes | Approximate GiB |
+| --- | ---: | ---: |
+| Gemma | 85,526,000,000 | 79.65 |
+| Talker | 7,854,000,000 | 7.31 |
+| STT | 20,983,000,000 | 19.54 |
+| TTS | 16,060,000,000 | 14.96 |
+
+These include reserved KV cache/runtime memory. A final twenty-second capture after the rollout lists one Gemma replica. These are
+sampled maxima, not an NVML/allocator peak for a single clean steady-state run.
+The existing test Gemma endpoint reserves 90% of its GPU. Same-host placement,
+shared-GPU contention, and a smaller KV budget have not been benchmarked.
+
+## Remaining validation limits
+
+The deployed and local test services intermittently returned connection refusals
+or `ConnectError` from this validation host. Two local speech turns completed,
+but the reconnect's generated response failed on a Reasoner connection error;
+the failure propagated and the session was released. Hosted WebSocket testing
+reached a live session, but the client subsequently hit a keepalive timeout;
+a later attempt could not establish a TCP connection. Server-side generation
+alone is not proof of delivery or playback in the browser.
+
+A complete repeated hosted browser conversation, physical playback checks,
+and human verification of filler versus substantive playback remain to be
+completed on a stable validation connection. Scripted initial/substantive
+transport interruption checks have passed. The final live
+transport fault-injection run passed; earlier attempts encountered upstream
+connection errors. Deterministic tests independently cover timeout, HTTP error,
+truncated stream and cancellation handling. The included validation scripts retain these checks
+for reproduction. There is no missing GPU now: Talker moved to L4 after an A10G
+capacity failure.
+
+The delivery ledger records dispatched text/audio, not browser acknowledgements.
+Interrupted history remains a best-effort dispatched prefix; it is not an exact
+recording of what the listener heard. No inference credentials or full real-user
+transcripts are included in the committed results.
+
+Machine-readable observations are in `validation/models.json`, `gpu.json`,
+`speech.json`, `faults.json`, and `bargein.json`. All prompts/audio used by the scripted speech checks were
+synthetic test material.

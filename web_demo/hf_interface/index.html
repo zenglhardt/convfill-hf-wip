@@ -29,13 +29,13 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
               </button>
             </div>
-            <p class="ident-blurb">ConvFill's local Talker and Claude Haiku Reasoner on Hugging Face's realtime speech stack.</p>
+            <p class="ident-blurb">ConvFill's fine-tuned Talker and quantized Gemma 4 Reasoner on Hugging Face's realtime speech stack.</p>
             <div class="ident-meta">
               <span class="ident-row">
                 <span class="ident-label">Models</span>
                 <a href="https://huggingface.co/vysri/Qwen-0.6B-ConvFill" target="_blank" rel="noopener">ConvFill Talker</a>
                 <span class="sep" aria-hidden="true">·</span>
-                <a href="https://platform.claude.com/docs/en/about-claude/models/overview" target="_blank" rel="noopener">Claude Haiku</a>
+                <a href="https://huggingface.co/nvidia/Gemma-4-31B-IT-NVFP4" target="_blank" rel="noopener">Gemma 4 31B</a>
               </span>
               <span class="ident-row">
                 <span class="ident-label">Built by</span>
@@ -57,7 +57,7 @@
           <button id="about-btn-m" class="icon-btn about-btn-mobile" title="About this space" aria-label="About this space">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
           </button>
-          <button id="tools-btn" class="icon-btn" title="Tools" aria-label="Tools">
+          <button id="tools-btn" hidden style="display:none" class="icon-btn" title="Tools" aria-label="Tools">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
           </button>
           <button id="chat-btn" class="icon-btn" title="Conversation history" aria-label="Conversation history">
@@ -186,7 +186,7 @@
 
         <!-- General intro to the speech-to-speech project -->
         <div class="about-intro">
-          <p>This demo uses Hugging Face for realtime speech transport, local transcription, and local synthesis. Claude Haiku streams knowledge to ConvFill's local Talker, which produces every phrase you hear.</p>
+          <p>This demo uses self-hosted speech models and quantized Gemma 4. Gemma streams concise knowledge to ConvFill's Talker, which produces every phrase you hear.</p>
           <a class="about-repo" href="https://github.com/huggingface/speech-to-speech" target="_blank" rel="noopener">View the project on GitHub<svg class="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg></a>
         </div>
 
@@ -208,7 +208,7 @@
             <li class="pipe-stage">
               <span class="pipe-tag">Reasoner</span>
               <span class="pipe-job">streams concise knowledge</span>
-              <a class="pipe-model" href="https://platform.claude.com/docs/en/about-claude/models/overview" target="_blank" rel="noopener">Claude Haiku<svg class="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg></a>
+              <a class="pipe-model" href="https://huggingface.co/nvidia/Gemma-4-31B-IT-NVFP4" target="_blank" rel="noopener">Gemma 4 31B<svg class="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg></a>
             </li>
             <li class="pipe-stage">
               <span class="pipe-tag">Talker</span>

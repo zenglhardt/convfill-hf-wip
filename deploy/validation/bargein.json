@@ -1,0 +1,20 @@
+{
+  "actual_models": true,
+  "browser_playback": false,
+  "tests": [
+    {
+      "case": "first_audio",
+      "old_audio_after_barge_confirmation": 0,
+      "response_status": "cancelled",
+      "audio_send_to_vad_barge_ms": 522.8,
+      "barge_confirmation_to_response_done_ms": -0.1
+    },
+    {
+      "case": "substantive_text",
+      "old_audio_after_barge_confirmation": 0,
+      "response_status": "cancelled",
+      "audio_send_to_vad_barge_ms": 526.4,
+      "barge_confirmation_to_response_done_ms": -0.1
+    }
+  ]
+}

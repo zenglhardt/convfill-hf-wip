@@ -329,7 +329,8 @@ let startupGreeting = "";
 let activeTransport = "ws";
 
 // ── Tool state ──────────────────────────────────────────────────────────────
-let toolsEnabled = loadTools();
+// ConvFill normal mode has no tool dispatcher; keep this voice demo speech-only.
+let toolsEnabled = { web_search: false, camera_snapshot: false };
 // Whether the server holds a Serper key (learned from /api/config on load).
 let serverSearchKey = false;
 // A user-supplied key (fallback when the deploy has none). localStorage only.
@@ -344,10 +345,7 @@ function searchAvailable() {
 
 /** Tool definitions for the currently-enabled (and usable) tools. */
 function activeToolDefs() {
-  const defs = [];
-  if (toolsEnabled.web_search && searchAvailable()) defs.push(TOOL_DEFS.web_search);
-  if (toolsEnabled.camera_snapshot) defs.push(TOOL_DEFS.camera_snapshot);
-  return defs;
+  return [];
 }
 
 /** Push the active tool set to a live session so toggles apply mid-call. */
@@ -630,7 +628,7 @@ function syncToolsUi() {
   }
 }
 
-toolsBtn.addEventListener("click", () => { syncToolsUi(); toolsModal.showModal(); });
+toolsBtn.hidden = true;
 toolsClose.addEventListener("click", () => toolsModal.close());
 toolsModal.addEventListener("click", (e) => {
   if (e.target === toolsModal) toolsModal.close();
@@ -1682,8 +1680,7 @@ initGateArc();
 void fetchConfig();
 // Start the webcam as soon as the user lands (camera tool defaults on), and
 // react to later permission changes (re-grant after a denial re-enables it).
-void autoStartCamera();
-void watchCameraPermission();
+// Camera and tools stay disabled for the hosted ConvFill normal-mode demo.
 
 // Reconcile a live session if the tab is closed/hidden mid-call (no teardown).
 window.addEventListener("pagehide", () => { endTrackedSession(); endQueueTicket(); });

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 import threading
 from queue import Empty, Queue
 from typing import Any, Callable, Iterator
@@ -66,6 +68,8 @@ class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
         self._yielded_fragments = 0
         self._response_key: str | None = None
         self._ledger: DeliveryLedgerQueue | None = None
+        self._turn_started_at = None
+        self._first_knowledge = False
 
         callbacks = {
             "on_thought": self._on_thought,
@@ -122,10 +126,15 @@ class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
             self._active_events.put((kind, payload))
 
     def _on_thought(self, thought: str) -> None:
-        if thought != "<sil>":
+        if thought != "<sil>" and self._turn_started_at is not None and not self._first_knowledge:
+            self._first_knowledge = True
+            logger.info("ConvFill first useful knowledge: %.3fs", time.perf_counter() - self._turn_started_at)
+        if thought != "<sil>" and os.environ.get("CONVFILL_LOG_CONTENT") == "1":
             logger.info("ConvFill Reasoner knowledge: %s", thought)
 
     def _on_response_fragment(self, text: str) -> None:
+        if getattr(self.system, "cancel_event", threading.Event()).is_set():
+            return
         cleaned = strip_markdown(text).strip()
         if not cleaned:
             return
@@ -205,6 +214,8 @@ class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
             except BaseException as exc:
                 events.put(("runner_error", exc))
 
+        self._turn_started_at = time.perf_counter()
+        self._first_knowledge = False
         worker = threading.Thread(target=run_turn, daemon=True, name="convfill-realtime-turn")
         worker.start()
 
@@ -212,8 +223,13 @@ class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
         completed = False
         cancelled = False
         error: BaseException | None = None
+        deadline = time.monotonic() + float(getattr(getattr(self.system, "convfill_config", None), "turn_timeout_s", 90)) + 5
         try:
             while worker.is_alive() or not events.empty():
+                if time.monotonic() > deadline:
+                    self.system.cancel_turn()
+                    error = TimeoutError("ConvFill handler deadline exceeded")
+                    break
                 if self._turn_is_stale(request, generation):
                     if not cancelled:
                         cancelled = True
@@ -222,6 +238,9 @@ class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
                         # anything still scheduled is never heard.
                         if self._ledger is not None:
                             self._ledger.reset_playback()
+                    elif not getattr(self.system, "cancel_event", threading.Event()).is_set():
+                        # Cancellation can race run_turn's new event creation.
+                        self.system.cancel_turn()
                 try:
                     kind, payload = events.get(timeout=0.05)
                 except Empty:
@@ -238,17 +257,16 @@ class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
                 elif kind == "runner_error":
                     error = payload
 
-            worker.join()
+            worker.join(timeout=2.0)
 
             if self._turn_is_stale(request, generation):
                 cancelled = True
 
             heard = ""
             if cancelled and error is None:
-                # Commit whatever the client was actually sent, so the Reasoner
-                # can continue from it rather than repeat it. Nothing delivered
-                # means nothing was heard (a speculative reopen replays the same
-                # words under a fresh revision), so the turn is discarded.
+                # Best-effort dispatched-text prefix. The transport has no
+                # playback acknowledgement: this is NOT verified heard text.
+                # The interruption marker tells the Reasoner it may be partial.
                 heard = self._delivered_text(request.response_key)
                 if heard:
                     self.system.commit_interrupted_turn(user_text, heard)
@@ -286,7 +304,7 @@ class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
                     "ConvFill realtime turn failed",
                     exc_info=(type(error), error, error.__traceback__),
                 )
-                error_message = f"ConvFill turn failed: {error}"
+                error_message = "ConvFill inference failed. Please try again."
             elif not cancelled and not completed:
                 self.system.dialogue_state_manager.rollback_turn(user_text)
                 error_message = "ConvFill did not complete the response."
@@ -307,6 +325,7 @@ class ConvFillRealtimeHandler(BaseHandler[LLMIn, LLMOut]):
                 self.system.cancel_turn()
                 worker.join(timeout=2.0)
             self._active_events = None
+            self._turn_started_at = None
             self._release_ledger(request.response_key)
             with self._audio_lock:
                 self._pending_audio_fragments = 0

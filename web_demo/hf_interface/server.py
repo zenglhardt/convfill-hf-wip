@@ -9,18 +9,21 @@ from __future__ import annotations
 
 import logging
 import os
+import asyncio
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException
+import websockets
+from src.utils.api_keys import get_endpoint_api_key
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 HERE = Path(__file__).resolve().parent
-SPEECH_TO_SPEECH_URL = os.environ.get(
-    "SPEECH_TO_SPEECH_URL", "ws://127.0.0.1:8765/v1/realtime"
-).strip()
+SPEECH_TO_SPEECH_URL = os.environ.get("SPEECH_TO_SPEECH_URL", "").strip()
+PIPELINE_URL = os.environ.get("CONVFILL_PIPELINE_URL", "ws://127.0.0.1:8765/v1/realtime")
+_session_active = False
 STARTUP_GREETING = os.environ.get("STARTUP_GREETING", "").strip()
 SERPER_API_KEY = os.environ.get("SERPER_API_KEY", "").strip()
 SERPER_URL = "https://google.serper.dev/search"
@@ -41,17 +44,94 @@ def healthz() -> dict[str, str]:
 
 
 @app.get("/api/config")
-def config() -> dict[str, object]:
+def config(request: Request) -> dict[str, object]:
+    scheme = "wss" if request.url.scheme == "https" else "ws"
     return {
         "search": bool(SERPER_API_KEY),
         "lb": False,
         "allowDirect": True,
-        "s2sUrl": SPEECH_TO_SPEECH_URL,
+        "s2sUrl": SPEECH_TO_SPEECH_URL or f"{scheme}://{request.url.netloc}/v1/realtime",
         "rtc": False,
         "iceServers": [],
         "startupGreeting": STARTUP_GREETING,
         "auth": False,
     }
+
+
+@app.get("/readyz")
+async def readyz():
+    # Readiness requires the pipeline to accept a session, not just a static UI.
+    target = PIPELINE_URL.replace("wss://", "https://", 1).replace("ws://", "http://", 1)
+    target = target.rsplit("/v1/realtime", 1)[0] + "/v1/pool"
+    try:
+        async with httpx.AsyncClient(timeout=3, transport=httpx.AsyncHTTPTransport(retries=2)) as client:
+            response = await client.get(target)
+            response.raise_for_status()
+            for stage in ("REASONER", "TALKER"):
+                base_url = os.environ.get(f"CONVFILL_{stage}_URL")
+                if base_url:
+                    key = get_endpoint_api_key(f"CONVFILL_{stage}_API_KEY")
+                    headers = {"Authorization": f"Bearer {key}"} if key else {}
+                    response = await client.get(base_url.rstrip("/") + "/models", headers=headers)
+                    response.raise_for_status()
+                    models = [model["id"] for model in response.json().get("data", [])]
+                    expected = os.environ.get("CONVFILL_REASONER_MODEL", "nvidia/Gemma-4-31B-IT-NVFP4") if stage == "REASONER" else "vysri/Qwen-0.6B-ConvFill"
+                    if expected not in models:
+                        raise ValueError("Configured model is not ready")
+    except (httpx.HTTPError, ValueError):
+        raise HTTPException(503, "Speech pipeline is not ready")
+    return {"status": "ready", "session_active": _session_active}
+
+
+@app.websocket("/v1/realtime")
+async def realtime(socket: WebSocket):
+    global _session_active
+    # Reject cross-origin browser connections and concurrent sessions. The
+    # gateway must restrict access to this test demo (e.g. a private HF Space).
+    origin = socket.headers.get("origin")
+    host = socket.headers.get("host")
+    if origin and origin not in (f"https://{host}", f"http://{host}"):
+        await socket.close(code=1008)
+        return
+    if _session_active:
+        await socket.close(code=1013)
+        return
+    _session_active = True
+    tasks = []
+    try:
+        await socket.accept()
+        async with websockets.connect(PIPELINE_URL, open_timeout=10, max_size=8 * 1024 * 1024) as backend:
+            async def upstream():
+                while True:
+                    message = await socket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        return
+                    await backend.send(message.get("text") or message.get("bytes") or "")
+
+            async def downstream():
+                async for message in backend:
+                    if isinstance(message, bytes):
+                        await socket.send_bytes(message)
+                    else:
+                        await socket.send_text(message)
+
+            tasks = [asyncio.create_task(upstream()), asyncio.create_task(downstream())]
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+    except (WebSocketDisconnect, websockets.exceptions.WebSocketException, OSError):
+        pass
+    finally:
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        _session_active = False
+        try:
+            await socket.close()
+        except (RuntimeError, WebSocketDisconnect):
+            pass
 
 
 @app.get("/api/me")

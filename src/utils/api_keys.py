@@ -13,6 +13,11 @@ _PROVIDER_ENV = {
 }
 
 
+def get_endpoint_api_key(env_var: str | None) -> str:
+    """Optional self-hosted endpoint credential, always read server-side."""
+    return os.environ.get(env_var, "") if env_var else ""
+
+
 def get_api_key(provider: str) -> str:
     """Return the API key for `provider`, raising if it is unset."""
     var = get_api_key_env_var(provider)

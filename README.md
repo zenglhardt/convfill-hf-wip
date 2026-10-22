@@ -1,5 +1,11 @@
 # Thinking While Speaking: Inference-Time Knowledge Transfer for Responsive and Intelligent Conversational Voice Agents
 
+The hosted Gemma demo uses the existing quantized Gemma 4 31B Reasoner and
+the original fine-tuned ConvFill Talker on two concurrent vLLM servers.
+See [deployment instructions](deploy/README.md) and [validation results](deploy/VALIDATION.md).
+The private test UI is [smolagents/convfill-speech-demo](https://huggingface.co/spaces/smolagents/convfill-speech-demo).
+
+
 <p align="center">
   <a href="https://huggingface.co/datasets/zenglhardt/convfill-dataset"><img src="https://img.shields.io/badge/🤗%20HuggingFace-Dataset-yellow?style=flat" alt="HuggingFace Dataset" /></a>&nbsp;
   <a href="https://arxiv.org/abs/2511.07397"><img src="https://img.shields.io/badge/arXiv-2511.07397-b31b1b?style=flat&logo=arxiv" alt="arXiv" /></a>&nbsp;

@@ -39,12 +39,15 @@ if [ -z "${NLTK_DATA:-}" ]; then
 fi
 export NLTK_DATA
 
-if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-  echo "[error] ANTHROPIC_API_KEY is not set." >&2
-  echo "Export it in this shell, then run this script again:" >&2
-  echo "  export ANTHROPIC_API_KEY=..." >&2
-  exit 1
-fi
+# Validate only the selected provider. Self-hosted vLLM needs no commercial key.
+"$PYTHON_BIN" - "$CONVFILL_CONFIG" "$CONVFILL_MODE" <<'CHECK'
+import sys
+from src.inference.convfill_stack.run_convfill import ConvFillConfig
+from src.utils.api_keys import get_api_key
+config = ConvFillConfig(sys.argv[1], mode=sys.argv[2])
+if config.backend_model_mode != "vllm":
+    get_api_key(config.backend_model_mode)
+CHECK
 
 if ! "$PYTHON_BIN" -c 'import speech_to_speech, anthropic, strip_markdown; import web_demo.hf_convfill' >/dev/null 2>&1; then
   echo "[error] ConvFill speech dependencies are not installed in '$("$PYTHON_BIN" -c "import sys; print(sys.prefix)")'." >&2
@@ -60,7 +63,7 @@ if [ ! -d "$UI_DIR/node_modules" ]; then
   exit 1
 fi
 
-export SPEECH_TO_SPEECH_URL="${SPEECH_TO_SPEECH_URL:-ws://127.0.0.1:${S2S_PORT}/v1/realtime}"
+export CONVFILL_PIPELINE_URL="ws://127.0.0.1:${S2S_PORT}/v1/realtime"
 export STARTUP_GREETING="${STARTUP_GREETING:-}"
 
 S2S_PID=""
@@ -75,8 +78,17 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "[speech] starting Hugging Face speech-to-speech on ${SPEECH_TO_SPEECH_URL}"
+echo "[speech] starting Hugging Face speech-to-speech on port ${S2S_PORT}"
 echo "[speech] STT=${HF_S2S_STT} LLM=ConvFill(${CONVFILL_CONFIG}:${CONVFILL_MODE}) TTS=${HF_S2S_TTS}"
+speech_args=()
+if [ "$HF_S2S_STT" = openai ]; then
+  speech_args+=(--openai_stt_base_url "${CONVFILL_STT_URL:?Set CONVFILL_STT_URL including /v1}" --openai_stt_model "${CONVFILL_STT_MODEL:-Qwen/Qwen3-ASR-1.7B}" --openai_stt_timeout 30)
+  [ -z "${CONVFILL_STT_API_KEY:-}" ] || speech_args+=(--openai_stt_api_key "$CONVFILL_STT_API_KEY")
+fi
+if [ "$HF_S2S_TTS" = openai ]; then
+  speech_args+=(--openai_tts_base_url "${CONVFILL_TTS_URL:?Set CONVFILL_TTS_URL including /v1}" --openai_tts_model "${CONVFILL_TTS_MODEL:-Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice}" --openai_tts_voice "${CONVFILL_TTS_VOICE:-aiden}" --openai_tts_stream true --openai_tts_timeout 30)
+  [ -z "${CONVFILL_TTS_API_KEY:-}" ] || speech_args+=(--openai_tts_api_key "$CONVFILL_TTS_API_KEY")
+fi
 "$PYTHON_BIN" -m web_demo.hf_convfill.server serve \
   --host 127.0.0.1 \
   --port "$S2S_PORT" \
@@ -85,7 +97,8 @@ echo "[speech] STT=${HF_S2S_STT} LLM=ConvFill(${CONVFILL_CONFIG}:${CONVFILL_MODE
   --convfill_config_path "$CONVFILL_CONFIG" \
   --convfill_mode "$CONVFILL_MODE" \
   --tts "$HF_S2S_TTS" \
-  --enable_live_transcription &
+  --num_pipelines 1 \
+  --enable_live_transcription "${speech_args[@]}" &
 S2S_PID=$!
 
 echo -n "[speech] waiting for :${S2S_PORT}"
@@ -111,7 +124,7 @@ fi
 
 echo "[interface] starting on http://127.0.0.1:${UI_PORT}"
 "$PYTHON_BIN" -m uvicorn --app-dir "$UI_DIR" server:app \
-  --host 127.0.0.1 --port "$UI_PORT" &
+  --host "${UI_HOST:-127.0.0.1}" --port "$UI_PORT" --proxy-headers --forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-127.0.0.1}" --no-access-log &
 UI_PID=$!
 
 echo
@@ -120,4 +133,8 @@ echo "  open: http://127.0.0.1:${UI_PORT}"
 echo "  press Ctrl+C to stop both processes"
 echo
 
-wait
+# Supervise both children: a failed pipeline must stop the public UI too.
+while kill -0 "$S2S_PID" 2>/dev/null && kill -0 "$UI_PID" 2>/dev/null; do
+  sleep 1
+done
+exit 1

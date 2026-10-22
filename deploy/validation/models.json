@@ -1,0 +1,46 @@
+{
+  "actual_inference": true,
+  "browser_test": false,
+  "turns": [
+    {
+      "knowledge_sentences": 3,
+      "talker_sentences": 5,
+      "first_filler_signal_s": 0.0006849999772384763,
+      "first_talker_sentence_s": 0.425493666989496,
+      "first_useful_reasoner_sentence_s": 0.7024917079834267,
+      "knowledge_during_talker_generation": true,
+      "total_s": 2.0436581669782754,
+      "completed": true,
+      "expected_fact_in_talker_response": true,
+      "history_turns": 1
+    },
+    {
+      "knowledge_sentences": 1,
+      "talker_sentences": 3,
+      "first_filler_signal_s": 0.0006770000036340207,
+      "first_talker_sentence_s": 0.410268207982881,
+      "first_useful_reasoner_sentence_s": 0.5459316659835167,
+      "knowledge_during_talker_generation": true,
+      "total_s": 1.170773707999615,
+      "completed": true,
+      "expected_fact_in_talker_response": true,
+      "history_turns": 2
+    },
+    {
+      "knowledge_sentences": 1,
+      "talker_sentences": 3,
+      "first_filler_signal_s": 0.00013670901535078883,
+      "first_talker_sentence_s": 0.5451415000134148,
+      "first_useful_reasoner_sentence_s": 0.743495583999902,
+      "knowledge_during_talker_generation": true,
+      "total_s": 1.5167267920041922,
+      "completed": true,
+      "expected_fact_in_talker_response": true,
+      "history_turns": 3
+    }
+  ],
+  "cancellation": {
+    "cancel_join_s": 0.1725006670167204,
+    "errors": []
+  }
+}

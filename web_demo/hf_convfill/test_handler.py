@@ -206,7 +206,7 @@ def test_failed_turn_is_removed_from_convfill_history():
     outputs = list(handler.process(_request(_FakeChat())))
 
     assert isinstance(outputs[-1], EndOfResponse)
-    assert "reasoner unavailable" in outputs[-1].error
+    assert outputs[-1].error == "ConvFill inference failed. Please try again."
     assert handler.system.dialogue_state_manager.user_turns == []
 
 
