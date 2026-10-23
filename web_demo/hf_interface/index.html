@@ -222,7 +222,7 @@
             <li class="pipe-stage">
               <span class="pipe-tag">TTS</span>
               <span class="pipe-job">speaks it back</span>
-              <a class="pipe-model" href="https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice" target="_blank" rel="noopener">Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice<svg class="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg></a>
+              <a class="pipe-model" href="https://huggingface.co/gradium/phonon-31m-en" target="_blank" rel="noopener">Phonon 31M (CPU)<svg class="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg></a>
             </li>
             <li class="pipe-endpoint">The orb replies</li>
           </ol>
@@ -269,15 +269,44 @@
               <label class="field">
                 <span>Voice</span>
                 <select id="voice">
-                  <option value="Aiden" selected>Aiden</option>
-                  <option value="Ryan">Ryan</option>
-                  <option value="Dylan">Dylan</option>
-                  <option value="Eric">Eric</option>
-                  <option value="Ono_Anna">Ono_Anna</option>
-                  <option value="Serena">Serena</option>
-                  <option value="Sohee">Sohee</option>
-                  <option value="Uncle_Fu">Uncle_Fu</option>
-                  <option value="Vivian">Vivian</option>
+                  <option value="default" selected>Default (Phonon)</option>
+                  <option value="Zoey">Zoey</option>
+                  <option value="Juniper">Juniper</option>
+                  <option value="Everly">Everly</option>
+                  <option value="Harper">Harper</option>
+                  <option value="Hadley">Hadley</option>
+                  <option value="Delia">Delia</option>
+                  <option value="Easton">Easton</option>
+                  <option value="Micah">Micah</option>
+                  <option value="Trevor">Trevor</option>
+                  <option value="Russell">Russell</option>
+                  <option value="Preston">Preston</option>
+                  <option value="Miles">Miles</option>
+                  <option value="Maeve">Maeve</option>
+                  <option value="Freya">Freya</option>
+                  <option value="Pippa">Pippa</option>
+                  <option value="Elodie-Rose">Elodie-Rose</option>
+                  <option value="Imogen">Imogen</option>
+                  <option value="Lottie">Lottie</option>
+                  <option value="Alfie">Alfie</option>
+                  <option value="Hugh">Hugh</option>
+                  <option value="Edwin">Edwin</option>
+                  <option value="Spencer">Spencer</option>
+                  <option value="Toby">Toby</option>
+                  <option value="Teddy">Teddy</option>
+                  <option value="Bryony">Bryony</option>
+                  <option value="Captain Silas Blackwater">Captain Silas Blackwater</option>
+                  <option value="Morwenna of the Deep">Morwenna of the Deep</option>
+                  <option value="Old Mortlake">Old Mortlake</option>
+                  <option value="Azgorath">Azgorath</option>
+                  <option value="Fennick the Young Elf">Fennick the Young Elf</option>
+                  <option value="The Thing Under the Stairs">The Thing Under the Stairs</option>
+                  <option value="Vyrmathrax the Ancient">Vyrmathrax the Ancient</option>
+                  <option value="Grub the Ogre">Grub the Ogre</option>
+                  <option value="Master Aldric">Master Aldric</option>
+                  <option value="The Snow Queen">The Snow Queen</option>
+                  <option value="Sir Bramwell">Sir Bramwell</option>
+                  <option value="Fairy Godmother">Fairy Godmother</option>
                 </select>
               </label>
             </div>
@@ -431,6 +460,6 @@
     </dialog>
 
     <script src="vendor/openai-realtime-agents.umd.js"></script>
-    <script type="module" src="main.js?v=audio-24k-v2"></script>
+    <script type="module" src="main.js?v=phonon-voices-v1"></script>
   </body>
 </html>

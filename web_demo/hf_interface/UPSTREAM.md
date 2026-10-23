@@ -62,3 +62,9 @@ remain for debugging. The Space allocates sessions through the approved test loa
 balancer; ConvFill, VAD, output holds, and per-session histories live in external
 managed CPU workers. Model services remain remote. `deploy/Dockerfile.single-session`
 retains the previous local orchestration layout for development only.
+
+The hosted CPU workers now synthesize speech with Phonon 31M English. The voice
+picker offers its checkpoint default and the English Phonon catalog voices.
+Shared settings code takes the default from the deployed picker and replaces
+obsolete saved voices before connecting; valid selections remain unchanged.
+The About panel identifies the actual Phonon model.
