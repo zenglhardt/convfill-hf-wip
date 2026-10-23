@@ -4,6 +4,12 @@ The hosted Gemma demo uses the existing quantized Gemma 4 31B Reasoner and
 the original fine-tuned ConvFill Talker on two concurrent vLLM servers.
 See [deployment instructions](deploy/README.md) and [validation results](deploy/VALIDATION.md).
 The private test UI is [smolagents/convfill-speech-demo](https://huggingface.co/spaces/smolagents/convfill-speech-demo).
+The hosted normal-mode Reasoner uses `convfill_backend_template_streaming_conv.txt`
+to supply the next question or fact after the Talker's acknowledgment. Its examples
+avoid a second greeting, reassurance, or permission response, including paraphrases.
+The original Reasoner template remains available by configuration. The Talker's
+fine-tuned prompt format and exact-repeat filter stay unchanged; its initial filler
+can still sound generic.
 
 
 <p align="center">
