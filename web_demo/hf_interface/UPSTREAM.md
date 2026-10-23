@@ -38,6 +38,8 @@ to choose this route, and the same cancellation/deadline controls apply.
 The hosted header names “ConvFill's Talker and Gemma 4 Reasoner” above
 “on Hugging Face's speech-to-speech”, with a project-repository link. The
 phone layout keeps both lines visible and places controls on the next row.
+The demo credits list andito, tfrere, and A-Mahla in that order, followed by a
+separate collaboration row linking to the University of Washington UbiComp Lab.
 
 PR #751's default-on Faster interruptions setting, local Silero v6 detector,
 output gain control, and pinned model/worklet/WASM dependencies are synchronized
