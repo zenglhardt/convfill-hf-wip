@@ -8,10 +8,11 @@
  *
  *   main -> worklet:
  *     { kind: "config", inputRate: 24000 }              one-shot at startup
- *     { kind: "audio", samples: Float32Array }          (transferable) per chunk
- *     { kind: "clear" }                                 wipe queue (barge-in)
+ *     { kind: "audio", samples: Float32Array, key }          (transferable) per chunk
+ *     { kind: "clear", clearId? }                       wipe queue (barge-in)
  *
  *   worklet -> main:
+ *     { kind: "cleared", clearId, played }             per-item rendered PCM counts
  *     { kind: "stats", queuedMs, played }               every ~250 ms
  *     { kind: "underrun" }                              every time the queue
  *                                                      runs dry mid-playback
@@ -31,6 +32,8 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
     this._inputRate = 24000;
     this._stepRatio = this._inputRate / sampleRate;
     this._queue = [];
+    this._playedByItem = new Map();
+    this._startedKeys = new Set();
     this._readIdx = 0;
     this._fracPos = 0;
     this._playing = false;
@@ -52,8 +55,10 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
           break;
         case "audio":
           if (data.samples instanceof Float32Array && data.samples.length > 0) {
-            this._queue.push(data.samples);
-            if (!this._playing) {
+            this._queue.push({ samples: data.samples, key: data.key });
+            // A clear may still be fading the previous response out. New
+            // audio must cancel that stop or it will strand the new queue.
+            if (!this._playing || this._fadeOut > 0) {
               this._playing = true;
               this._fadeIn = FADE_FRAMES;
               this._fadeOut = 0;
@@ -61,6 +66,11 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
           }
           break;
         case "clear":
+          if (data.clearId !== undefined) {
+            this.port.postMessage({ kind: "cleared", clearId: data.clearId, played: [...this._playedByItem] });
+          }
+          this._playedByItem.clear();
+          this._startedKeys.clear();
           this._queue.length = 0;
           this._readIdx = 0;
           this._fracPos = 0;
@@ -72,14 +82,14 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
 
   _queuedSamples() {
     let total = -this._readIdx;
-    for (const buf of this._queue) total += buf.length;
+    for (const buf of this._queue) total += buf.samples.length;
     return Math.max(0, total);
   }
 
   /** Linear-interp read at the current fractional position. */
   _readInterpolated() {
     if (this._queue.length === 0) return null;
-    const head = this._queue[0];
+    const head = this._queue[0].samples;
     const idx = this._readIdx;
     const frac = this._fracPos;
 
@@ -88,7 +98,7 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
     if (idx + 1 < head.length) {
       b = head[idx + 1];
     } else if (this._queue.length > 1) {
-      b = this._queue[1][0];
+      b = this._queue[1].samples[0];
     } else {
       b = a;
     }
@@ -97,14 +107,20 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
 
   /** Advance the read position by `stepRatio`; pop consumed buffers. */
   _advance() {
-    this._fracPos += this._stepRatio;
-    while (this._fracPos >= 1) {
-      this._fracPos -= 1;
-      this._readIdx += 1;
-    }
-    while (this._queue.length > 0 && this._readIdx >= this._queue[0].length) {
-      this._readIdx -= this._queue[0].length;
-      this._queue.shift();
+    let remaining = this._stepRatio;
+    while (remaining > 0 && this._queue.length) {
+      const { key, samples } = this._queue[0];
+      const consumed = Math.min(remaining, samples.length - this._readIdx - this._fracPos);
+      this._playedByItem.set(key, (this._playedByItem.get(key) ?? 0) + consumed);
+      const position = this._readIdx + this._fracPos + consumed;
+      this._readIdx = Math.floor(position);
+      this._fracPos = position - this._readIdx;
+      remaining -= consumed;
+      if (this._readIdx >= samples.length) {
+        this._readIdx = 0;
+        this._fracPos = 0;
+        this._queue.shift();
+      }
     }
   }
 
@@ -116,6 +132,7 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
 
     for (let i = 0; i < out.length; i++) {
       let sample = 0;
+      const renderedKey = this._queue[0]?.key;
 
       if (this._playing) {
         const v = this._readInterpolated();
@@ -152,6 +169,11 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
         this._totalPlayed += 1;
       }
 
+      if (renderedKey && Math.abs(sample) > 1e-7 && !this._startedKeys.has(renderedKey)) {
+        this._startedKeys.add(renderedKey);
+        this.port.postMessage({ kind: "started", key: renderedKey,
+          audioTime: (typeof currentTime === "number" ? currentTime : 0) + i / sampleRate });
+      }
       out[i] = sample;
       if (stereo) stereo[i] = sample;
     }

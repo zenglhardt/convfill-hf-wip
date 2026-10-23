@@ -37,6 +37,12 @@ class ConvFillBackend:
             self.mcp_tools = self.mcp_hub.list_tools()
             print(f"[mcp] {len(self.mcp_tools)} tools available across {len(server_specs)} servers", flush=True)
 
+    def cancel(self):
+        self.model_backend.cancel()
+
+    def begin_turn(self, cancel_event):
+        self.model_backend.begin_turn(cancel_event)
+
     def emit_silence_token(self):
         yield "<sil>"
 

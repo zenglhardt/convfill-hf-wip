@@ -1,3 +1,4 @@
+import os
 import json
 import warnings
 
@@ -17,6 +18,8 @@ def _load_google_generativeai():
 
 def _llm_send(provider: str, model: str, payload: dict) -> None:
     """Print every payload sent to an LLM. Dumps the full thing — no truncation."""
+    if os.environ.get("CONVFILL_LOG_CONTENT") != "1":
+        return
     try:
         body = json.dumps(payload, default=str, ensure_ascii=False)
     except Exception:
@@ -53,13 +56,28 @@ def _openai_reasoning_kwargs(model_name, reasoning_effort):
 
 
 class BackendInference:
-    def __init__(self, api_key, model_name, model_mode, reasoning_effort=None):
+    def __init__(self, api_key, model_name, model_mode, reasoning_effort=None, remote_config=None):
         self.api_key = api_key
         self.model_name = model_name
         self.model_mode = model_mode
         self.reasoning_effort = reasoning_effort
+        self.remote = None
+        if model_mode == "vllm":
+            from .remote_inference import RemoteInference
+            self.remote = RemoteInference({"model": model_name, **(remote_config or {})})
+
+    def begin_turn(self, cancel_event):
+        if self.remote is not None:
+            self.remote.begin_turn(cancel_event)
+
+    def cancel(self):
+        if self.remote is not None:
+            self.remote.cancel()
 
     def infer(self, prompt):
+        if self.remote is not None:
+            yield from self.remote.knowledge(prompt)
+            return
         if self.model_mode == "gemini":
             gemini = GeminiInference(self.api_key, self.model_name)
             yield from gemini.generate_response(prompt)

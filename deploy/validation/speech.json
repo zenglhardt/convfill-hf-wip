@@ -1,0 +1,30 @@
+{
+  "actual_models": true,
+  "browser_playback": false,
+  "successful_turns": [
+    {
+      "session": 0,
+      "turn": 0,
+      "audio_bytes": 115712,
+      "stt_completed": true,
+      "status": "completed",
+      "vad_event_to_first_audio_ms": 634.4
+    },
+    {
+      "session": 0,
+      "turn": 1,
+      "audio_bytes": 131072,
+      "stt_completed": true,
+      "status": "completed",
+      "vad_event_to_first_audio_ms": 479.2
+    }
+  ],
+  "native_speech_end_to_first_audio_s": [
+    3.426,
+    2.631
+  ],
+  "reconnect_session_created": true,
+  "reconnect_response_completed": false,
+  "reconnect_failure": "Reasoner ConnectError; the failed turn propagated and the pipeline released its session",
+  "hosted_validation": "Space server produced one complete audio response; client delivery test hit a keepalive timeout and later connection refusal"
+}

@@ -1,13 +1,21 @@
-from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
-import torch
 import json
 import logging
+import os
+import queue
+import re
 import threading
 import time
-from pathlib import Path
+
+import torch
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    StoppingCriteria,
+    StoppingCriteriaList,
+    TextIteratorStreamer,
+)
+
 from src.inference.shared.turn_state_manager import TurnStateManager
-from src.inference.shared.dialogue_state_manager import DialogueStateManager
-import re
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?:(?<=[.!?])|(?<=[.!?][\"')\]]))\s+")
 
@@ -17,6 +25,21 @@ def _flush_sentences(buf: str) -> tuple[list[str], str]:
     if len(parts) == 1:
         return [], buf
     return [p for p in parts[:-1] if p.strip()], parts[-1]
+
+
+def _without_repeated_sentence_prefix(text: str, previous: str) -> str:
+    """Drop exact sentence echoes at a streaming handoff, never paraphrases."""
+
+    def key(value):
+        return re.findall(r"\w+(?:'\w+)*", value.replace("’", "'").casefold())
+
+    prior = [part.strip() for part in _SENTENCE_SPLIT_RE.split(previous.strip()) if part.strip()]
+    incoming = [part.strip() for part in _SENTENCE_SPLIT_RE.split(text.strip()) if part.strip()]
+    # Only a complete sentence with at least three words is an unambiguous echo.
+    while prior and incoming and len(key(incoming[0])) >= 3 and key(prior[-1]) == key(incoming[0]):
+        incoming.pop(0)
+    return " ".join(incoming)
+
 
 # remove faulty Gemma error
 logging.getLogger("transformers.utils.loading_report").setLevel(logging.ERROR)
@@ -49,6 +72,8 @@ class ConvFillFrontend:
         # backend defaults to mlx
         self.backend = self.model_config.get("backend", "mlx")
 
+        self.cancel_event = threading.Event()
+        self.remote = None
         self.model, self.tokenizer = self.load_model()
         self.turn_state_manager = TurnStateManager(boundary_tokens=self.boundary_tokens)
         self.dialogue_state_manager = dialogue_state_manager
@@ -61,6 +86,15 @@ class ConvFillFrontend:
         return self.boundary_tokens
 
     def load_model(self):
+        if self.backend == "vllm":
+            from .remote_inference import RemoteInference
+
+            checkpoint = self.model_config["convfill_hf_pretrained_path"]
+            revision = self.model_config.get("revision", "main")
+            tokenizer = AutoTokenizer.from_pretrained(checkpoint, revision=revision)
+            self._validate_remote_tokenizer(tokenizer)
+            self.remote = RemoteInference({"model": checkpoint, **self.model_config.get("remote", {})})
+            return None, tokenizer
         if self.backend == "mlx":
             model_checkpoint_path = self.model_config.get("convfill_hf_mlx_pretrained_path")
         else:
@@ -68,9 +102,7 @@ class ConvFillFrontend:
 
         if not model_checkpoint_path:
             field_name = "convfill_hf_mlx_pretrained_path" if self.backend == "mlx" else "convfill_hf_pretrained_path"
-            raise ValueError(
-                f"{self.model_config_path} is missing {field_name}"
-            )
+            raise ValueError(f"{self.model_config_path} is missing {field_name}")
 
         config_dtype = self.model_config.get("torch_dtype")
         if self.dtype is not None:
@@ -102,6 +134,35 @@ class ConvFillFrontend:
 
             _MODEL_CACHE[cache_key] = (model, tokenizer)
             return model, tokenizer
+
+    def _validate_remote_tokenizer(self, tokenizer):
+        expected = self.model_config.get("expected_token_ids", {})
+        for token in ["<sil>", self.boundary_tokens["END"].strip(), "<|im_start|>"]:
+            ids = tokenizer.encode(token, add_special_tokens=False)
+            if len(ids) != 1 or tokenizer.decode(ids) != token:
+                raise ValueError(f"Fine-tuned checkpoint does not preserve {token!r} as one token")
+            if token in expected and ids[0] != expected[token]:
+                raise ValueError(f"Fine-tuned token ID mismatch for {token!r}: {ids}")
+
+    def begin_turn(self, cancel_event):
+        self.cancel_event = cancel_event
+        if self.remote:
+            self.remote.begin_turn(cancel_event)
+
+    def cancel(self):
+        self.cancel_event.set()
+        if self.remote:
+            self.remote.cancel()
+
+    def _iter_remote_chunks(self, prompt):
+        # Send exact IDs from the fine-tuned tokenizer: no chat template, no
+        # added BOS, no re-tokenization by an unrelated base checkpoint.
+        ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+        stop_ids = [
+            self.tokenizer.eos_token_id,
+            self.tokenizer.encode(self.boundary_tokens["END"].strip(), add_special_tokens=False)[0],
+        ]
+        yield from self.remote.completion(ids, sorted(set(stop_ids)))
 
     def _load_hf(self, model_checkpoint_path, resolved_dtype):
         model = AutoModelForCausalLM.from_pretrained(
@@ -145,6 +206,7 @@ class ConvFillFrontend:
 
     def _load_mlx(self, model_checkpoint_path):
         import mlx_lm
+
         model, tokenizer = mlx_lm.load(model_checkpoint_path)
         print("[MODEL SETUP] LOADED MLX MODEL", self.model_name, flush=True)
         print("[MODEL SETUP] LOADED WEIGHTS FROM", model_checkpoint_path, flush=True)
@@ -185,9 +247,7 @@ class ConvFillFrontend:
         return thoughts
 
     def _iter_hf_chunks(self, prompt):
-        encoded = self.tokenizer(
-            prompt, return_tensors="pt", padding=False, truncation=False
-        )
+        encoded = self.tokenizer(prompt, return_tensors="pt", padding=False, truncation=False)
         input_ids = encoded["input_ids"].to(self.device)
         pad_id = self.tokenizer.pad_token_id
 
@@ -195,8 +255,17 @@ class ConvFillFrontend:
             self.tokenizer,
             skip_prompt=True,
             skip_special_tokens=False,
+            timeout=1.0,
         )
+        cancel = self.cancel_event
+        generation_stop = threading.Event()
+
+        class Cancelled(StoppingCriteria):
+            def __call__(self, input_ids, scores, **kwargs):
+                return cancel.is_set() or generation_stop.is_set()
+
         gen_kwargs = dict(
+            stopping_criteria=StoppingCriteriaList([Cancelled()]),
             input_ids=input_ids,
             max_new_tokens=256,
             do_sample=False,
@@ -225,12 +294,23 @@ class ConvFillFrontend:
 
         try:
             count = 0
-            for chunk in streamer:
+            while not cancel.is_set():
+                try:
+                    chunk = next(streamer)
+                except queue.Empty:
+                    if not thread.is_alive():
+                        break
+                    continue
+                except StopIteration:
+                    break
                 if chunk:
                     count += 1
                 yield chunk, count
         finally:
-            thread.join()
+            generation_stop.set()
+            thread.join(timeout=2.0)
+            if thread.is_alive():
+                raise TimeoutError("Transformers Talker did not stop")
             if gen_error:
                 raise gen_error[0]
 
@@ -238,16 +318,18 @@ class ConvFillFrontend:
         import mlx_lm
 
         n = 0
-        for resp in mlx_lm.stream_generate(
-            self.model, self.tokenizer, prompt=prompt, max_tokens=256
-        ):
+        for resp in mlx_lm.stream_generate(self.model, self.tokenizer, prompt=prompt, max_tokens=256):
+            if self.cancel_event.is_set():
+                break
             n = resp.generation_tokens
             yield resp.text, n
 
     def run_convfill_inference(self, prompt):
         end_tok = self.boundary_tokens["END"].strip()
 
-        if self.backend == "mlx":
+        if self.backend == "vllm":
+            chunk_iter = self._iter_remote_chunks(prompt)
+        elif self.backend == "mlx":
             chunk_iter = self._iter_mlx_chunks(prompt)
         else:
             chunk_iter = self._iter_hf_chunks(prompt)
@@ -256,21 +338,36 @@ class ConvFillFrontend:
         self.last_first_token_ms = None
         self.last_first_sentence_ms = None
 
+        from .remote_inference import VisibleTextFilter
+
+        visible = VisibleTextFilter()
         buf = ""
+        raw_pending = ""
         last_token_count = 0
         hit_end = False
         try:
             for chunk, token_count in chunk_iter:
+                if self.cancel_event.is_set():
+                    break
+                last_token_count = token_count
                 if not chunk:
                     continue
-                last_token_count = token_count
                 if self.last_first_token_ms is None:
                     self.last_first_token_ms = (time.perf_counter() - t0) * 1000.0
-                buf += chunk
-
-                if end_tok and end_tok in buf:
-                    buf = buf.split(end_tok, 1)[0]
+                raw_pending += chunk
+                if end_tok and end_tok in raw_pending:
+                    safe_chunk = raw_pending.split(end_tok, 1)[0]
+                    raw_pending = ""
                     hit_end = True
+                else:
+                    # Keep a possible partial END token until the next chunk.
+                    hold = 0
+                    for length in range(1, len(end_tok)):
+                        if raw_pending.endswith(end_tok[:length]):
+                            hold = length
+                    safe_chunk = raw_pending[:-hold] if hold else raw_pending
+                    raw_pending = raw_pending[-hold:] if hold else ""
+                buf += visible.feed(safe_chunk)
 
                 sentences, buf = _flush_sentences(buf)
                 for s in sentences:
@@ -289,14 +386,15 @@ class ConvFillFrontend:
         self.last_generated_tokens = last_token_count
 
         tail = buf.strip()
-        if tail:
+        if tail and not self.cancel_event.is_set():
             if self.last_first_sentence_ms is None:
                 self.last_first_sentence_ms = (time.perf_counter() - t0) * 1000.0
             yield tail
 
     def infer(self, current_user_input, current_thought, history=None):
         assert history is not None, "History must be provided for inference."
-        print("\n[Inferring with thought]\n" + current_thought + "\n", flush=True)
+        if os.environ.get("CONVFILL_LOG_CONTENT") == "1":
+            print("[Inferring with thought] " + current_thought, flush=True)
         prompt = self.turn_state_manager.build_prompt(
             current_user_input=current_user_input,
             current_thought=current_thought,
@@ -304,6 +402,12 @@ class ConvFillFrontend:
         )
         yield from self.run_convfill_inference(prompt)
 
+    def prepare_continuation(self, user_text, spoken_prefix):
+        """Resume a tool turn with the earlier Talker prefix in its prompt."""
+        self.reset_turn_state()
+        if spoken_prefix.strip():
+            self.turn_state_manager.add_user_turn(user_text)
+            self.turn_state_manager.add_response(spoken_prefix.strip())
 
     def infer_and_update_state(self, current_thought):
         history = self.dialogue_state_manager.get_history()
@@ -314,12 +418,18 @@ class ConvFillFrontend:
             current_thought=current_thought,
             history=history,
         ):
-            pieces.append(fragment)
-            yield fragment
+            previous = " ".join(self.turn_state_manager.responses + pieces)
+            fragment = _without_repeated_sentence_prefix(fragment, previous)
+            if fragment:
+                pieces.append(fragment)
+                yield fragment
+        if self.cancel_event.is_set():
+            return
         full_response = " ".join(pieces).strip()
         if self.turn_state_manager.user_turn_empty():
             self.turn_state_manager.add_user_turn(user_in)
-        self.turn_state_manager.add_response(full_response)
+        if full_response:
+            self.turn_state_manager.add_response(full_response)
         self.turn_state_manager.add_thought(current_thought)
 
     def get_final_response_and_reset_turn_state(self):

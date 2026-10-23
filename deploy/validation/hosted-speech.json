@@ -1,0 +1,31 @@
+{
+  "actual_models": true,
+  "browser_playback": false,
+  "turns": [
+    {
+      "session": 0,
+      "turn": 0,
+      "audio_bytes": 102400,
+      "stt_completed": true,
+      "status": "completed",
+      "vad_event_to_first_audio_ms": 189.9
+    },
+    {
+      "session": 0,
+      "turn": 1,
+      "audio_bytes": 125952,
+      "stt_completed": true,
+      "status": "completed",
+      "vad_event_to_first_audio_ms": 167.2
+    },
+    {
+      "session": 1,
+      "turn": 0,
+      "audio_bytes": 87040,
+      "stt_completed": true,
+      "status": "completed",
+      "vad_event_to_first_audio_ms": 182.3
+    }
+  ],
+  "reconnected": true
+}

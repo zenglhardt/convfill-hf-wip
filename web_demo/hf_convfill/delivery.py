@@ -1,4 +1,4 @@
-"""A pipeline output queue that records what actually reached the browser.
+"""A pipeline output queue that records what the transport dequeued for dispatch.
 
 Hugging Face's realtime send loop pulls every assistant text event and every
 audio chunk off ``PipelineUnit.output_queue`` with ``get_nowait()``. Subclassing
@@ -6,9 +6,9 @@ that queue and observing each dequeue gives ConvFill two facts it cannot get
 anywhere else:
 
 * which Talker sentences were handed to the client for a given response key, so
-  an interrupted turn can be committed with what the user actually heard, and
+  an interrupted turn can retain a best-effort dispatched prefix, and
 * how much audio has been dispatched, so ``<sil>`` filler scheduling can be
-  driven by real playback time instead of Hugging Face's coarse
+  driven by an estimated playback duration rather than Hugging Face's coarse
   ``response_playing`` event, which stays set for a whole response.
 
 Barge-in flushes drain ``q.queue`` directly under ``q.mutex`` without calling
@@ -147,7 +147,7 @@ class DeliveryLedgerQueue(Queue):
             self._delivered.pop(str(response_key), None)
 
     def audio_playing(self) -> bool:
-        """Whether dispatched audio should still be playing in the browser."""
+        """Estimate whether dispatched audio may still be playing (no client acknowledgement)."""
         with self._ledger_lock:
             return time.monotonic() < self._playhead
 

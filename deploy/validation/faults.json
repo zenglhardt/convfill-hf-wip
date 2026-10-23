@@ -1,0 +1,40 @@
+{
+  "actual_models": true,
+  "injected_transport_faults": true,
+  "tests": [
+    {
+      "case": "delay",
+      "elapsed_s": 5.35308887498104,
+      "failed": false,
+      "history_turns": 1,
+      "passed": true,
+      "first_talker_s": 0.43424775000312366,
+      "first_knowledge_s": 3.850087083003018,
+      "filler_preceded_knowledge": true
+    },
+    {
+      "case": "http_error",
+      "elapsed_s": 0.22710966700105928,
+      "failed": true,
+      "history_turns": 0,
+      "passed": true,
+      "error": "Inference HTTP 503"
+    },
+    {
+      "case": "stream_interruption",
+      "elapsed_s": 0.6709556660207454,
+      "failed": true,
+      "history_turns": 0,
+      "passed": true,
+      "error": "Inference stream ended without [DONE]"
+    },
+    {
+      "case": "timeout",
+      "elapsed_s": 0.7871247919974849,
+      "failed": true,
+      "history_turns": 0,
+      "passed": true,
+      "error": "Inference request deadline exceeded"
+    }
+  ]
+}

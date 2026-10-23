@@ -1,0 +1,34 @@
+{
+  "namespace": "smolagents",
+  "kind": "sampled whole-replica memory; not allocator high-water mark",
+  "services": {
+    "reachy-s2s-llm-01": {
+      "samples": 9,
+      "max_sampled_bytes": 85526000000.0,
+      "replicas": {
+        "b75f0vje-cg4p8": 85526000000.0
+      }
+    },
+    "convfill-talker": {
+      "samples": 10,
+      "max_sampled_bytes": 7854000000.0,
+      "replicas": {
+        "qh5463jr-8cnw5": 7854000000.0
+      }
+    },
+    "reachy-s2s-stt-01": {
+      "samples": 9,
+      "max_sampled_bytes": 20983000000.0,
+      "replicas": {
+        "pwhw3ejf-n66gd": 20983000000.0
+      }
+    },
+    "reachy-s2s-tts-01": {
+      "samples": 11,
+      "max_sampled_bytes": 16060000000.0,
+      "replicas": {
+        "ywp2dkmb-d74cn": 16060000000.0
+      }
+    }
+  }
+}

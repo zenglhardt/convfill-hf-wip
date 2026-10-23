@@ -1,5 +1,17 @@
 # Thinking While Speaking: Inference-Time Knowledge Transfer for Responsive and Intelligent Conversational Voice Agents
 
+The hosted Gemma demo uses the existing quantized Gemma 4 31B Reasoner and
+the original fine-tuned ConvFill Talker on two concurrent vLLM servers.
+See [deployment instructions](deploy/README.md) and [validation results](deploy/VALIDATION.md).
+The private test UI is [smolagents/convfill-speech-demo](https://huggingface.co/spaces/smolagents/convfill-speech-demo).
+The hosted normal-mode Reasoner uses `convfill_backend_template_streaming_conv.txt`
+to supply the next question or fact after the Talker's acknowledgment. Its examples
+avoid a second greeting, reassurance, or permission response, including paraphrases.
+The original Reasoner template remains available by configuration. The Talker's
+fine-tuned prompt format and exact-repeat filter stay unchanged; its initial filler
+can still sound generic.
+
+
 <p align="center">
   <a href="https://huggingface.co/datasets/zenglhardt/convfill-dataset"><img src="https://img.shields.io/badge/🤗%20HuggingFace-Dataset-yellow?style=flat" alt="HuggingFace Dataset" /></a>&nbsp;
   <a href="https://arxiv.org/abs/2511.07397"><img src="https://img.shields.io/badge/arXiv-2511.07397-b31b1b?style=flat&logo=arxiv" alt="arXiv" /></a>&nbsp;
@@ -283,3 +295,20 @@ If you use ConvFill, the dataset, or the released models in your work, please ci
 ```
 
 ConvFill code is released under the MIT License — see [`LICENSE`](LICENSE). The vendored Hugging Face browser interface is Apache-2.0; see [`web_demo/hf_interface/UPSTREAM.md`](web_demo/hf_interface/UPSTREAM.md) and its retained license.
+
+### Hosted multi-session deployment
+
+The hosted Space is a browser UI and session proxy only. Deploy ConvFill in the
+managed CPU pipeline workers behind the approved test load balancer. Each worker
+uses the upstream `convfill_demo.pipeline` entry point with its existing pool size;
+VAD, output holds, cancellation, delivery ledgers, and histories live there. The
+Reasoner, Talker, STT, and TTS remain remote model services. Configure
+`LOAD_BALANCER_URL` server-side for `deploy/hf_space.py`, and supply
+`LB_HF_TOKEN` only when the allocator has protected infrastructure ingress; keep the
+existing `SERPER_API_KEY` in the Space. The deployer preserves the private Space.
+
+`scripts/run_web_demo.sh` and `deploy/Dockerfile.single-session` retain the previous
+local development layout. That layout has a one-session gateway and is not used
+for the hosted multi-user deployment. Backend configuration and rollout belong
+in the private infrastructure repository; reusable runtime code is in upstream
+speech-to-speech PR #750.
